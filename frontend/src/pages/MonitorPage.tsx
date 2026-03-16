@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react' // eslint-disable-line
-import { loadPositions, removePosition, calcPNL, Position } from '../lib/positions'
+import { loadPositions, removePosition, savePosition, calcPNL, Position } from '../lib/positions'
 import { loadHistory, addToHistory, clearHistory, ClosedTrade } from '../lib/history'
 import { loadSession } from '../lib/session'
 import { api } from '../lib/api'
@@ -8,6 +8,15 @@ import SellSlider from '../components/SellSlider'
 type Tab = 'positions' | 'history'
 type FeeLevel = 'normal' | 'fast' | 'turbo' | 'mayhem'
 type PriceMap = Record<string, number>
+
+interface RecoverForm {
+  mint: string
+  name: string
+  symbol: string
+  devBuySol: string
+  devWalletPrivateKey: string
+  bundleKeys: string  // uma por linha
+}
 
 export default function MonitorPage() {
   const [tab, setTab] = useState<Tab>('positions')
@@ -24,6 +33,12 @@ export default function MonitorPage() {
   const [claimingFees, setClaimingFees] = useState<Record<string, boolean>>({})
   const [claimMsg, setClaimMsg] = useState<Record<string, string>>({})
   const [vaultBalances, setVaultBalances] = useState<Record<string, number>>({})
+  const [showRecover, setShowRecover] = useState(false)
+  const [recoverForm, setRecoverForm] = useState<RecoverForm>({
+    mint: '', name: '', symbol: '', devBuySol: '0', devWalletPrivateKey: '', bundleKeys: ''
+  })
+  const [recoverLoading, setRecoverLoading] = useState(false)
+  const [recoverError, setRecoverError] = useState('')
   const wsRef = useRef<WebSocket | null>(null)
   const session = loadSession()
 
@@ -231,6 +246,67 @@ export default function MonitorPage() {
     }
   }
 
+  async function recoverPosition() {
+    setRecoverError('')
+    const mint = recoverForm.mint.trim()
+    if (!mint) { setRecoverError('Mint obrigatorio'); return }
+
+    setRecoverLoading(true)
+    try {
+      // Tenta buscar nome/symbol automaticamente
+      let name = recoverForm.name.trim()
+      let symbol = recoverForm.symbol.trim()
+      if (!name || !symbol) {
+        try {
+          const meta = await api.get<{ name: string; symbol: string }>(`/token/${mint}/metadata`)
+          name = name || meta.name || mint.slice(0, 6)
+          symbol = symbol || meta.symbol || '???'
+        } catch {
+          name = name || mint.slice(0, 6)
+          symbol = symbol || '???'
+        }
+      }
+
+      // Monta bundle wallets a partir das private keys digitadas
+      const bundleWallets: Position['bundleWallets'] = []
+      const lines = recoverForm.bundleKeys.split('\n').map(l => l.trim()).filter(Boolean)
+      for (let i = 0; i < lines.length; i++) {
+        bundleWallets.push({
+          publicKey: '',  // sera preenchido pelo backend ao vender
+          privateKeyBase58: lines[i],
+          label: `Bundle ${i + 1}`,
+          buySol: 0,
+          tokenAmount: '0',
+          buyPriceSol: 0,
+        })
+      }
+
+      const pos: Position = {
+        mint,
+        name,
+        symbol,
+        openedAt: Date.now(),
+        devBuySol: parseFloat(recoverForm.devBuySol) || 0,
+        devTokenAmount: '0',
+        devBuyPriceSol: 0,
+        devWalletPrivateKey: recoverForm.devWalletPrivateKey.trim() || undefined,
+        bundleWallets,
+        totalSolSpent: parseFloat(recoverForm.devBuySol) || 0,
+      }
+
+      savePosition(pos)
+      setPositions(loadPositions())
+      setShowRecover(false)
+      setRecoverForm({ mint: '', name: '', symbol: '', devBuySol: '0', devWalletPrivateKey: '', bundleKeys: '' })
+      // Inicia monitor
+      api.post('/monitor/start', { mint }).catch(() => {})
+    } catch (err: unknown) {
+      setRecoverError(err instanceof Error ? err.message : 'Erro')
+    } finally {
+      setRecoverLoading(false)
+    }
+  }
+
   function closePosition(pos: Position) {
     removePosition(pos.mint)
     setPositions(loadPositions())
@@ -293,12 +369,72 @@ export default function MonitorPage() {
           </button>
         </div>
         <div className="flex items-center gap-2 pb-2">
+          <button onClick={() => setShowRecover(v => !v)} className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
+            recuperar
+          </button>
           <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-400">
             <input type="checkbox" checked={useJito} onChange={e => setUseJito(e.target.checked)} className="accent-brand" />
             Jito
           </label>
         </div>
       </div>
+
+      {/* Modal recuperar posicao */}
+      {showRecover && (
+        <div className="card border-warning/30 bg-surface-800 space-y-3">
+          <p className="text-sm font-semibold text-warning">Recuperar posicao</p>
+          <p className="text-xs text-gray-400">Use quando o token foi deployado mas nao apareceu no monitor.</p>
+          <div>
+            <label className="label">Mint address</label>
+            <input
+              value={recoverForm.mint}
+              onChange={e => setRecoverForm(p => ({ ...p, mint: e.target.value }))}
+              className="w-full font-mono text-xs"
+              placeholder="Endereco do token (mint)"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="label">Nome (opcional — busca automatico)</label>
+              <input value={recoverForm.name} onChange={e => setRecoverForm(p => ({ ...p, name: e.target.value }))} className="w-full" placeholder="Ex: MyCoin" />
+            </div>
+            <div>
+              <label className="label">Symbol</label>
+              <input value={recoverForm.symbol} onChange={e => setRecoverForm(p => ({ ...p, symbol: e.target.value }))} className="w-full" placeholder="Ex: MYC" />
+            </div>
+          </div>
+          <div>
+            <label className="label">SOL gasto no dev buy</label>
+            <input value={recoverForm.devBuySol} onChange={e => setRecoverForm(p => ({ ...p, devBuySol: e.target.value }))} className="w-full" placeholder="0" type="number" step="0.01" />
+          </div>
+          <div>
+            <label className="label">Private key da dev wallet (se usou fresh wallet)</label>
+            <input
+              value={recoverForm.devWalletPrivateKey}
+              onChange={e => setRecoverForm(p => ({ ...p, devWalletPrivateKey: e.target.value }))}
+              className="w-full font-mono text-xs"
+              placeholder="Deixe vazio se usou a wallet principal"
+              type="password"
+            />
+          </div>
+          <div>
+            <label className="label">Private keys das bundle wallets (uma por linha)</label>
+            <textarea
+              value={recoverForm.bundleKeys}
+              onChange={e => setRecoverForm(p => ({ ...p, bundleKeys: e.target.value }))}
+              className="w-full font-mono text-xs h-24 bg-surface-700 border border-surface-600 rounded p-2"
+              placeholder={"5Jxxx...\n4Kyyy...\n(uma por linha, deixe vazio se nao tem)"}
+            />
+          </div>
+          {recoverError && <p className="text-danger text-xs">{recoverError}</p>}
+          <div className="flex gap-2">
+            <button onClick={recoverPosition} disabled={recoverLoading} className="btn-primary flex-1">
+              {recoverLoading ? 'recuperando...' : 'recuperar posicao'}
+            </button>
+            <button onClick={() => setShowRecover(false)} className="btn-ghost px-4">cancelar</button>
+          </div>
+        </div>
+      )}
 
       {/* POSICOES */}
       {tab === 'positions' && positions.map(pos => {

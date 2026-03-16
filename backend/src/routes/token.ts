@@ -262,6 +262,37 @@ tokenRouter.post('/sell', async (req: Request, res: Response) => {
   }
 })
 
+// GET /api/token/:mint/metadata
+// Retorna nome, symbol e preco de um token pelo mint (consulta pump.fun API)
+tokenRouter.get('/:mint/metadata', async (req: Request, res: Response) => {
+  const { mint } = req.params
+  try {
+    const connection = getConnection()
+    const mintPubkey = new PublicKey(mint)
+    const dummyKeypair = Keypair.generate()
+    const sdk = getSDK(dummyKeypair)
+
+    // Preco via bonding curve
+    const price = await getCurrentPrice(sdk, mintPubkey)
+
+    // Nome/symbol via pump.fun API publica
+    let name = ''
+    let symbol = ''
+    try {
+      const r = await fetch(`https://frontend-api.pump.fun/coins/${mint}`)
+      if (r.ok) {
+        const data = await r.json() as { name?: string; symbol?: string }
+        name = data.name || ''
+        symbol = data.symbol || ''
+      }
+    } catch { /* pump.fun API pode estar fora */ }
+
+    res.json({ mint, name, symbol, price })
+  } catch (err: unknown) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Erro' })
+  }
+})
+
 // GET /api/token/:mint/info
 // Retorna preco atual + saldo da sessao
 tokenRouter.get('/:mint/info', async (req: Request, res: Response) => {
