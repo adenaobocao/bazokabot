@@ -216,6 +216,7 @@ liveDeploysRouter.post('/signals/:id/create-draft', async (req, res) => {
   if (!supabase) return noDb(res)
 
   const source_post_id = req.params.id
+  const username = user(req)
   const { name, ticker, description, twitter_url, image_url } = req.body
   if (!name || !ticker) return res.status(400).json({ error: 'name e ticker obrigatorios' })
 
@@ -223,13 +224,14 @@ liveDeploysRouter.post('/signals/:id/create-draft', async (req, res) => {
     .from('launch_drafts')
     .select('id, name, ticker, description, twitter_url, image_url, status')
     .eq('source_post_id', source_post_id)
+    .eq('username', username)
     .eq('status', 'pending')
     .maybeSingle()
   if (existing) return res.json(existing)
 
   const { data, error } = await supabase
     .from('launch_drafts')
-    .insert({ source_post_id, name, ticker, description, twitter_url, image_url })
+    .insert({ source_post_id, username, name, ticker, description, twitter_url, image_url })
     .select()
     .single()
   if (error) return res.status(500).json({ error: error.message })
@@ -244,6 +246,7 @@ liveDeploysRouter.post('/signals/:id/create-draft', async (req, res) => {
 
 liveDeploysRouter.patch('/drafts/:id', async (req, res) => {
   if (!supabase) return noDb(res)
+  const username = user(req)
   const { name, ticker, description, twitter_url, image_url } = req.body
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (name !== undefined) update.name = name
@@ -256,6 +259,7 @@ liveDeploysRouter.patch('/drafts/:id', async (req, res) => {
     .from('launch_drafts')
     .update(update)
     .eq('id', req.params.id)
+    .eq('username', username)
     .select()
     .single()
   if (error) return res.status(500).json({ error: error.message })
@@ -266,12 +270,14 @@ liveDeploysRouter.patch('/drafts/:id', async (req, res) => {
 liveDeploysRouter.post('/drafts/:id/deployed', async (req, res) => {
   if (!supabase) return noDb(res)
 
+  const username = user(req)
   const { tx_hash, mint_address, error_message, deploy_status = 'success', dev_buy_sol = 0 } = req.body
 
   const { data: draft } = await supabase
     .from('launch_drafts')
     .select('id, source_post_id')
     .eq('id', req.params.id)
+    .eq('username', username)
     .single()
   if (!draft) return res.status(404).json({ error: 'Draft nao encontrado' })
 
@@ -311,8 +317,9 @@ liveDeploysRouter.post('/drafts/:id/deployed', async (req, res) => {
 // Tokens deployados
 // -------------------------------------------------------
 
-liveDeploysRouter.get('/deployed', async (_req, res) => {
+liveDeploysRouter.get('/deployed', async (req, res) => {
   if (!supabase) return noDb(res)
+  const username = user(req)
   const { data, error } = await supabase
     .from('deploy_runs')
     .select(`
@@ -322,18 +329,20 @@ liveDeploysRouter.get('/deployed', async (_req, res) => {
       mint_address,
       dev_buy_sol,
       created_at,
-      launch_drafts (
+      launch_drafts!inner (
         id,
         name,
         ticker,
         description,
         twitter_url,
         image_url,
+        username,
         source_posts ( author_handle, post_url )
       )
     `)
     .eq('deploy_status', 'success')
     .not('mint_address', 'is', null)
+    .eq('launch_drafts.username', username)
     .order('created_at', { ascending: false })
   if (error) return res.status(500).json({ error: error.message })
   res.json(data)
