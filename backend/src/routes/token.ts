@@ -464,7 +464,7 @@ tokenRouter.post('/claim-fees', async (req: Request, res: Response) => {
 
   try {
     const connection = getConnection()
-    const fee = feeLevel as typeof import('../solana/jito').FeeLevel
+    const fee = feeLevel as FeeLevel
     let creator: Keypair
     if (devWalletPrivateKey) {
       creator = Keypair.fromSecretKey(bs58.decode(devWalletPrivateKey))
