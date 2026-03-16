@@ -50,7 +50,7 @@ export default function DeployPage() {
   // Deploy config
   const [devBuySol, setDevBuySol] = useState('2')
   const [feeLevel, setFeeLevel] = useState<FeeLevel>('fast')
-  const [useJito, setUseJito] = useState(true)
+  const [useJito, setUseJito] = useState(false)
   const [grindMint, setGrindMint] = useState(false)
   const [mayhemMode, setMayhemMode] = useState(false)
 
@@ -379,7 +379,7 @@ export default function DeployPage() {
 
         <div className="flex gap-4 flex-wrap">
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={useJito} onChange={e => setUseJito(e.target.checked)} className="accent-brand" />
+            <input type="checkbox" checked={useJito} onChange={e => { setUseJito(e.target.checked); if (e.target.checked) alert('Aviso: Jito esta com problemas e provavelmente vai falhar. Recomendado manter desativado.') }} className="accent-brand" />
             <span className="text-sm">Jito bundle</span>
           </label>
           <label className="flex items-center gap-2 cursor-pointer" title="Gera mint address terminando em 'pump'. Usa CPU por varios segundos.">

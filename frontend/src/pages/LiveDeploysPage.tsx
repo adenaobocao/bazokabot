@@ -321,7 +321,7 @@ export default function LiveDeploysPage() {
     try {
       const res = await api.post<{ success: boolean; bundleId?: string; signature?: string; results?: any[]; error?: string }>(
         '/token/sell-all',
-        { mint, percentage, includeDevWallet: true, wallets: [], feeLevel, useJito: true }
+        { mint, percentage, includeDevWallet: true, wallets: [], feeLevel, useJito: false }
       )
       if (res.success) {
         const id = res.bundleId ?? res.signature ?? res.results?.[0]?.signature
@@ -454,7 +454,7 @@ export default function LiveDeploysPage() {
       imageUrl: draft.image_url ?? '',
       devBuySol: '0',
       feeLevel: 'fast',
-      useJito: true,
+      useJito: false,
     })
     setDeployResult(null)
   }
@@ -1128,7 +1128,7 @@ function DeployPanel({ form, setForm, onDeploy, onClose, deploying, result, hasS
         </select>
       </Field>
       <label className="flex items-center gap-2 cursor-pointer">
-        <input type="checkbox" checked={form.useJito} onChange={e => update({ useJito: e.target.checked })} className="rounded" />
+        <input type="checkbox" checked={form.useJito} onChange={e => { update({ useJito: e.target.checked }); if (e.target.checked) alert('Aviso: Jito esta com problemas e provavelmente vai falhar. Recomendado manter desativado.') }} className="rounded" />
         <span className="text-xs text-gray-400">Usar Jito</span>
       </label>
       {!hasSession && <p className="text-xs text-yellow-400">Ative uma wallet para deployar.</p>}

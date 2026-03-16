@@ -29,7 +29,7 @@ export default function MonitorPage() {
   const [showBwKey, setShowBwKey] = useState<Record<string, boolean>>({})
   const [copiedKey, setCopiedKey] = useState<Record<string, boolean>>({})
   const [feeLevel] = useState<FeeLevel>('fast')
-  const [useJito, setUseJito] = useState(true)
+  const [useJito, setUseJito] = useState(false)
   const [claimingFees, setClaimingFees] = useState<Record<string, boolean>>({})
   const [claimMsg, setClaimMsg] = useState<Record<string, string>>({})
   const [sweepingBundles, setSweepingBundles] = useState<Record<string, boolean>>({})
@@ -458,7 +458,7 @@ export default function MonitorPage() {
             recuperar
           </button>
           <label className="flex items-center gap-1.5 cursor-pointer text-xs text-gray-400">
-            <input type="checkbox" checked={useJito} onChange={e => setUseJito(e.target.checked)} className="accent-brand" />
+            <input type="checkbox" checked={useJito} onChange={e => { setUseJito(e.target.checked); if (e.target.checked) alert('Aviso: Jito esta com problemas e provavelmente vai falhar. Recomendado manter desativado.') }} className="accent-brand" />
             Jito
           </label>
         </div>
