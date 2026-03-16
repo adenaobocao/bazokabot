@@ -1,10 +1,16 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../lib/api'
 import { loadLpPositions, saveLpPosition, removeLpPosition, LpPosition } from '../lib/lp-positions'
+import { loadBundleWallets } from '../lib/crypto'
 import { useSession } from '../lib/SessionContext'
 
 type Platform = 'raydium' | 'meteora'
-type Step = 'form' | 'uploading' | 'creating-token' | 'adding-lp' | 'done'
+type Step = 'form' | 'uploading' | 'creating-token' | 'adding-lp' | 'sniping' | 'done'
+
+interface SnipeResult {
+  results: Array<{ wallet: string; txId: string; type: string }>
+  freshWalletKey?: string
+}
 
 const RAYDIUM_FEE_TIERS = ['0.01%', '0.05%', '0.25%', '0.30%', '0.50%', '1%']
 const METEORA_FEE_TIERS = ['0.10%', '0.25%', '0.30%', '1%']
@@ -67,6 +73,15 @@ export default function StandardDeployPage() {
     toLocalDatetimeInputValue(Date.now() + 60 * 60 * 1000) // +1h
   )
 
+  // Snipe fields
+  const [snipeEnabled, setSnipeEnabled]     = useState(false)
+  const [devBuySol, setDevBuySol]           = useState('1')
+  const [useFreshWallet, setUseFreshWallet] = useState(false)
+  const [slippageBps, setSlippageBps]       = useState(500)
+  const [bundleEnabled, setBundleEnabled]   = useState(false)
+  // bundle wallets carregados do localStorage (mesmos da pump page)
+  const [bundleBuys, setBundleBuys] = useState<Record<string, string>>({}) // pubkey → buyAmountSol
+
   // State machine
   const [step, setStep]   = useState<Step>('form')
   const [error, setError] = useState('')
@@ -74,6 +89,7 @@ export default function StandardDeployPage() {
   // Results
   const [tokenResult, setTokenResult] = useState<TokenResult | null>(null)
   const [lpResult, setLpResult]       = useState<LpResult | null>(null)
+  const [snipeResult, setSnipeResult] = useState<SnipeResult | null>(null)
 
   // LP positions from localStorage
   const [positions, setPositions] = useState<LpPosition[]>([])
@@ -194,6 +210,26 @@ export default function StandardDeployPage() {
       saveLpPosition(pos)
       setPositions(loadLpPositions())
 
+      // Step 4: snipe (opcional)
+      if (snipeEnabled && Number(devBuySol) > 0) {
+        setStep('sniping')
+
+        const bundleWalletsPayload = bundleEnabled
+          ? loadBundleWallets(session!.publicKey)
+              .filter(w => Number(bundleBuys[w.publicKey] ?? 0) > 0)
+              .map(w => ({ privateKeyBase58: w.privateKeyBase58, buyAmountSol: Number(bundleBuys[w.publicKey]) }))
+          : []
+
+        const sr = await api.post<SnipeResult>('/standard/snipe', {
+          tokenMint: tokenRes.mint,
+          devBuySol: Number(devBuySol),
+          useFreshWallet,
+          bundleWallets: bundleWalletsPayload,
+          slippageBps,
+        })
+        setSnipeResult(sr)
+      }
+
       setStep('done')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro desconhecido')
@@ -250,16 +286,38 @@ export default function StandardDeployPage() {
 
       {/* ── Resultado pós-deploy ─────────────────────────────────────────── */}
       {step === 'done' && tokenResult && lpResult && (
-        <div className="rounded-lg border border-green-700/50 bg-green-900/20 p-4 space-y-2">
+        <div className="rounded-lg border border-green-700/50 bg-green-900/20 p-4 space-y-3">
           <p className="text-green-400 font-semibold text-sm">Deploy concluído</p>
           <div className="space-y-1 text-xs font-mono">
-            <Row label="Mint"  value={tokenResult.mint} />
-            <Row label="Pool"  value={lpResult.poolId ?? lpResult.poolAddress ?? '—'} />
-            <Row label="LP Mint" value={lpResult.lpMint} />
+            <Row label="Mint"     value={tokenResult.mint} />
+            <Row label="Pool"     value={lpResult.poolId ?? lpResult.poolAddress ?? '—'} />
+            <Row label="LP Mint"  value={lpResult.lpMint} />
             <Row label="Token TX" value={tokenResult.txId} />
             <Row label="LP TX"    value={lpResult.txId} />
           </div>
-          <button onClick={handleReset} className="btn-ghost text-xs mt-2">
+
+          {snipeResult && snipeResult.results.length > 0 && (
+            <div className="border-t border-green-700/30 pt-3 space-y-2">
+              <p className="text-green-400 text-xs font-semibold">Snipes executados</p>
+              {snipeResult.results.map((r, i) => (
+                <div key={i} className="text-xs font-mono space-y-0.5">
+                  <p className="text-gray-400">
+                    <span className="text-gray-600">[{r.type}]</span>{' '}
+                    {r.wallet.slice(0, 8)}…{r.wallet.slice(-6)}
+                  </p>
+                  <p className="text-gray-500">TX: {r.txId}</p>
+                </div>
+              ))}
+              {snipeResult.freshWalletKey && (
+                <div className="rounded bg-yellow-900/30 border border-yellow-700/40 p-2 mt-2">
+                  <p className="text-yellow-400 text-xs font-semibold mb-1">Fresh wallet — salve a private key agora</p>
+                  <p className="text-yellow-200 text-xs font-mono break-all">{snipeResult.freshWalletKey}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <button onClick={handleReset} className="btn-ghost text-xs mt-1">
             Novo deploy
           </button>
         </div>
@@ -272,8 +330,9 @@ export default function StandardDeployPage() {
             {step === 'uploading'      && 'Fazendo upload da imagem e metadata para IPFS...'}
             {step === 'creating-token' && 'Criando token on-chain (SPL + Metaplex)...'}
             {step === 'adding-lp'      && `Criando pool de liquidez na ${platform === 'raydium' ? 'Raydium' : 'Meteora'}...`}
+            {step === 'sniping'        && 'Sniping — aguardando Jupiter indexar a pool (pode levar ~60s)...'}
           </p>
-          {step === 'adding-lp' && tokenResult && (
+          {(step === 'adding-lp' || step === 'sniping') && tokenResult && (
             <p className="text-xs text-gray-400 mt-1 font-mono">Mint: {tokenResult.mint}</p>
           )}
         </div>
@@ -465,12 +524,149 @@ export default function StandardDeployPage() {
             )}
           </section>
 
+          {/* Snipe */}
+          <section className="card space-y-4">
+            <div className="flex items-center justify-between border-b border-surface-600 pb-2">
+              <h2 className="text-sm font-semibold text-gray-200">Snipe após criar pool</h2>
+              <button
+                onClick={() => setSnipeEnabled(v => !v)}
+                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors ${
+                  snipeEnabled ? 'bg-brand' : 'bg-surface-600'
+                }`}
+              >
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                  snipeEnabled ? 'translate-x-4' : 'translate-x-0'
+                }`} />
+              </button>
+            </div>
+
+            {snipeEnabled && (
+              <div className="space-y-4">
+                <p className="text-xs text-gray-500">
+                  Compra tokens via Jupiter logo após criar a pool. A pool pode demorar até ~60s para ser indexada — retries automáticos.
+                </p>
+
+                {/* Dev wallet */}
+                <Field label="Dev wallet">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setUseFreshWallet(false)}
+                      className={`flex-1 py-2 rounded text-sm border transition-colors ${
+                        !useFreshWallet
+                          ? 'border-brand bg-brand/10 text-brand'
+                          : 'border-surface-500 text-gray-400 hover:border-surface-400'
+                      }`}
+                    >
+                      Wallet principal
+                    </button>
+                    <button
+                      onClick={() => setUseFreshWallet(true)}
+                      className={`flex-1 py-2 rounded text-sm border transition-colors ${
+                        useFreshWallet
+                          ? 'border-brand bg-brand/10 text-brand'
+                          : 'border-surface-500 text-gray-400 hover:border-surface-400'
+                      }`}
+                    >
+                      Fresh wallet
+                    </button>
+                  </div>
+                  {useFreshWallet && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Uma wallet nova será gerada e financiada pela wallet principal. A private key será mostrada ao final.
+                    </p>
+                  )}
+                </Field>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <Field label="Comprar (SOL)">
+                    <input
+                      className="w-full"
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      value={devBuySol}
+                      onChange={e => setDevBuySol(e.target.value)}
+                      placeholder="ex: 1.0"
+                    />
+                  </Field>
+                  <Field label="Slippage">
+                    <select
+                      className="w-full"
+                      value={slippageBps}
+                      onChange={e => setSlippageBps(Number(e.target.value))}
+                    >
+                      <option value={100}>1%</option>
+                      <option value={300}>3%</option>
+                      <option value={500}>5%</option>
+                      <option value={1000}>10%</option>
+                      <option value={2000}>20%</option>
+                    </select>
+                  </Field>
+                </div>
+
+                {/* Bundle wallets */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-400 font-medium">Bundle wallets</p>
+                    <button
+                      onClick={() => setBundleEnabled(v => !v)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors ${
+                        bundleEnabled ? 'bg-brand' : 'bg-surface-600'
+                      }`}
+                    >
+                      <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        bundleEnabled ? 'translate-x-4' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+
+                  {bundleEnabled && (() => {
+                    const bws = loadBundleWallets(session!.publicKey)
+                    if (bws.length === 0) {
+                      return (
+                        <p className="text-xs text-gray-500">
+                          Nenhuma bundle wallet cadastrada. Adicione em Wallet Manager.
+                        </p>
+                      )
+                    }
+                    return (
+                      <div className="space-y-2">
+                        {bws.map(bw => (
+                          <div key={bw.publicKey} className="flex items-center gap-3">
+                            <span className="text-xs text-gray-400 font-mono truncate flex-1">
+                              {bw.label || bw.publicKey.slice(0, 8) + '…' + bw.publicKey.slice(-6)}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                placeholder="0 SOL"
+                                value={bundleBuys[bw.publicKey] ?? ''}
+                                onChange={e => setBundleBuys(prev => ({
+                                  ...prev,
+                                  [bw.publicKey]: e.target.value,
+                                }))}
+                                className="w-24 text-xs"
+                              />
+                              <span className="text-xs text-gray-600">SOL</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  })()}
+                </div>
+              </div>
+            )}
+          </section>
+
           <button
             onClick={handleDeploy}
             disabled={busy}
             className="btn-primary w-full py-3 text-sm font-medium disabled:opacity-50"
           >
-            Deploy + Criar Pool
+            Deploy + Criar Pool{snipeEnabled ? ' + Snipe' : ''}
           </button>
         </div>
       )}

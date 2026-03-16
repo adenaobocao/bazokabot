@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express'
 import { Keypair, PublicKey } from '@solana/web3.js'
+import bs58 from 'bs58'
 import FormData from 'form-data'
 import { getConnection } from '../solana/connection'
 import { ActiveSession } from '../middleware/session'
 import { createStandardToken } from '../solana/standard-token'
 import { createCpmmPool, removeCpmmLiquidity } from '../solana/raydium-cpmm'
 import { createDammPool, removeDammLiquidity } from '../solana/meteora-damm'
+import { jupiterSwapWithRetry, fundAndSwap, generateFreshKeypair } from '../solana/jupiter'
 
 export const standardRouter = Router()
 
@@ -230,6 +232,70 @@ standardRouter.post('/remove-liquidity', async (req: Request, res: Response) => 
     res.json({ txId })
   } catch (err) {
     console.error('[standard/remove-liquidity]', err)
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Erro desconhecido' })
+  }
+})
+
+// ── Snipe — swap SOL → token logo após criar a pool ──────────────────────────
+// Dev wallet (main ou fresh) + até 5 bundle wallets
+// Usa Jupiter com retry automático (pool pode demorar ~30-60s pra indexar)
+
+standardRouter.post('/snipe', async (req: Request, res: Response) => {
+  try {
+    const keypair = keypairFromSession(req)
+    const connection = getConnection()
+
+    const {
+      tokenMint,
+      devBuySol,       // número — 0 = sem compra na dev wallet
+      useFreshWallet,  // boolean
+      bundleWallets,   // Array<{ privateKeyBase58: string; buyAmountSol: number }>
+      slippageBps,     // número, default 500 (5%)
+    } = req.body as {
+      tokenMint: string
+      devBuySol: number
+      useFreshWallet: boolean
+      bundleWallets: Array<{ privateKeyBase58: string; buyAmountSol: number }>
+      slippageBps: number
+    }
+
+    const slippage = slippageBps ?? 500
+    const results: Array<{ wallet: string; txId: string; type: string }> = []
+    let freshWalletKey: string | undefined
+
+    // Dev buy
+    if (devBuySol > 0) {
+      const buyLamports = Math.round(devBuySol * 1e9)
+
+      if (useFreshWallet) {
+        const { keypair: fresh, privateKeyBase58 } = generateFreshKeypair()
+        freshWalletKey = privateKeyBase58
+        const { fundTxId, swapTxId } = await fundAndSwap(
+          connection, keypair, fresh, tokenMint, buyLamports, slippage,
+        )
+        console.log(`[snipe] fresh wallet funded: ${fundTxId}, swapped: ${swapTxId}`)
+        results.push({ wallet: fresh.publicKey.toBase58(), txId: swapTxId, type: 'dev-fresh' })
+      } else {
+        const txId = await jupiterSwapWithRetry(connection, keypair, tokenMint, buyLamports, slippage)
+        results.push({ wallet: keypair.publicKey.toBase58(), txId, type: 'dev-main' })
+      }
+    }
+
+    // Bundle buys
+    for (const bw of bundleWallets ?? []) {
+      if (!bw.buyAmountSol || bw.buyAmountSol <= 0) continue
+      const bwKeypair = Keypair.fromSecretKey(bs58.decode(bw.privateKeyBase58))
+      const buyLamports = Math.round(bw.buyAmountSol * 1e9)
+      const { fundTxId, swapTxId } = await fundAndSwap(
+        connection, keypair, bwKeypair, tokenMint, buyLamports, slippage,
+      )
+      console.log(`[snipe] bundle ${bwKeypair.publicKey.toBase58()} funded: ${fundTxId}, swapped: ${swapTxId}`)
+      results.push({ wallet: bwKeypair.publicKey.toBase58(), txId: swapTxId, type: 'bundle' })
+    }
+
+    res.json({ results, freshWalletKey })
+  } catch (err) {
+    console.error('[standard/snipe]', err)
     res.status(500).json({ error: err instanceof Error ? err.message : 'Erro desconhecido' })
   }
 })
