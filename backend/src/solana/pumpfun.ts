@@ -350,11 +350,18 @@ export async function deploySequential(
     const slippage = SLIPPAGE[feeLevel]
 
     // Usa o estado real da curva (evita SDK misparse do GlobalAccount)
-    const [curve, globalAccount] = await Promise.all([
-      sdk.getBondingCurveAccount(mint.publicKey, 'confirmed'),
-      sdk.getGlobalAccount('confirmed'),
-    ])
-    if (!curve) throw new Error('BondingCurve nao encontrada apos create')
+    // Retry com backoff — RPC lento pode demorar a indexar o account apos o create
+    let curve = await sdk.getBondingCurveAccount(mint.publicKey, 'confirmed')
+    if (!curve) {
+      for (let i = 0; i < 5; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        curve = await sdk.getBondingCurveAccount(mint.publicKey, 'confirmed')
+        if (curve) break
+      }
+    }
+    if (!curve) throw new Error('BondingCurve nao encontrada apos create (timeout 10s)')
+
+    const globalAccount = await sdk.getGlobalAccount('confirmed')
 
     const tokenAmount = curve.getBuyPrice(devBuyAmountSol)
     const maxSolCost = devBuyAmountSol + (devBuyAmountSol * slippage) / 10000n
