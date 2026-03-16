@@ -86,6 +86,32 @@ interface DeployForm {
   useJito: boolean
 }
 
+interface DeployedToken {
+  id: string
+  tx_hash: string
+  mint_address: string
+  created_at: string
+  launch_drafts: {
+    id: string
+    name: string
+    ticker: string
+    image_url: string
+    twitter_url: string
+    source_posts: { author_handle: string; post_url: string } | null
+  } | null
+}
+
+interface TokenInfo {
+  price: number
+  balance: string
+}
+
+interface TokenAction {
+  loading: boolean
+  result: string | null
+  error: string | null
+}
+
 // -------------------------------------------------------
 // Helpers
 // -------------------------------------------------------
@@ -172,7 +198,11 @@ export default function LiveDeploysPage() {
   const [seeding, setSeeding] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [creatingDraft, setCreatingDraft] = useState(false)
+  const [mainTab, setMainTab] = useState<'live' | 'deployed'>('live')
   const [tab, setTab] = useState<'feed' | 'watchlist'>('feed')
+  const [deployed, setDeployed] = useState<DeployedToken[]>([])
+  const [tokenInfos, setTokenInfos] = useState<Record<string, TokenInfo>>({})
+  const [tokenActions, setTokenActions] = useState<Record<string, TokenAction>>({})
   const [newHandle, setNewHandle] = useState('')
   const [addingSource, setAddingSource] = useState(false)
   const [filterStatus, setFilterStatus] = useState('')
@@ -197,16 +227,18 @@ export default function LiveDeploysPage() {
       if (filterMedia) params.set('has_media', 'true')
       params.set('limit', '80')
 
-      const [sigs, srcs, st, ws] = await Promise.all([
+      const [sigs, srcs, st, ws, dep] = await Promise.all([
         api.get<Signal[]>(`/live-deploys/signals?${params}`),
         api.get<TrackedSource[]>('/live-deploys/sources'),
         api.get<Stats>('/live-deploys/stats'),
         api.get<WorkerStatus>('/live-deploys/worker-status'),
+        api.get<DeployedToken[]>('/live-deploys/deployed'),
       ])
       setSignals(sigs)
       setSources(srcs)
       setStats(st)
       setWorkerStatus(ws)
+      setDeployed(dep)
       if (selected) {
         const updated = sigs.find(s => s.id === selected.id)
         if (updated) setSelected(updated)
@@ -217,6 +249,20 @@ export default function LiveDeploysPage() {
       setLoading(false)
     }
   }, [filterStatus, filterScore, filterMedia, selected?.id])
+
+  const loadTokenInfo = useCallback(async (mint: string) => {
+    if (!session) return
+    try {
+      const info = await api.get<TokenInfo>(`/token/${mint}/info`)
+      setTokenInfos(prev => ({ ...prev, [mint]: info }))
+    } catch { /* silencioso */ }
+  }, [session])
+
+  useEffect(() => {
+    if (mainTab === 'deployed' && session && deployed.length > 0) {
+      deployed.forEach(d => { if (d.mint_address) loadTokenInfo(d.mint_address) })
+    }
+  }, [mainTab, deployed.length, session])
 
   useEffect(() => { loadAll() }, [filterStatus, filterScore, filterMedia])
 
@@ -246,6 +292,48 @@ export default function LiveDeploysPage() {
   // -------------------------------------------------------
   // Acoes
   // -------------------------------------------------------
+
+  function setAction(mint: string, patch: Partial<TokenAction>) {
+    setTokenActions(prev => ({
+      ...prev,
+      [mint]: { ...{ loading: false, result: null, error: null }, ...prev[mint], ...patch },
+    }))
+  }
+
+  async function handleSellAll(mint: string, percentage: number) {
+    if (!session) return alert('Ative uma wallet primeiro.')
+    setAction(mint, { loading: true, result: null, error: null })
+    try {
+      const res = await api.post<{ success: boolean; bundleId?: string; signature?: string; results?: any[]; error?: string }>(
+        '/token/sell-all',
+        { mint, percentage, includeDevWallet: true, wallets: [], feeLevel: 'fast', useJito: true }
+      )
+      if (res.success) {
+        const id = res.bundleId ?? res.signature ?? res.results?.[0]?.signature
+        setAction(mint, { loading: false, result: `Vendido! ${id ? id.slice(0, 16) + '...' : ''}` })
+        setTimeout(() => loadTokenInfo(mint), 5000)
+      } else {
+        setAction(mint, { loading: false, error: res.error ?? 'Falhou' })
+      }
+    } catch (err: any) {
+      setAction(mint, { loading: false, error: err.message })
+    }
+  }
+
+  async function handleClaimFees(mint: string) {
+    if (!session) return alert('Ative uma wallet primeiro.')
+    setAction(mint, { loading: true, result: null, error: null })
+    try {
+      const res = await api.post<{ success: boolean; signature?: string; error?: string }>('/token/claim-fees', { feeLevel: 'fast' })
+      if (res.success) {
+        setAction(mint, { loading: false, result: `Fees claimed! ${res.signature?.slice(0, 16)}...` })
+      } else {
+        setAction(mint, { loading: false, error: res.error ?? 'Falhou' })
+      }
+    } catch (err: any) {
+      setAction(mint, { loading: false, error: err.message })
+    }
+  }
 
   async function handlePollNow() {
     setPolling(true)
@@ -427,7 +515,37 @@ export default function LiveDeploysPage() {
   return (
     <div className="flex flex-col gap-4 h-[calc(100vh-100px)] -mx-2">
 
-      {/* ---- Top bar ---- */}
+      {/* ---- Main tabs ---- */}
+      <div className="flex gap-2 items-center">
+        <button
+          onClick={() => setMainTab('live')}
+          className={`text-sm px-4 py-1.5 rounded border transition-colors ${mainTab === 'live' ? 'border-brand/50 bg-brand/10 text-brand' : 'border-surface-600 text-gray-400 hover:text-white'}`}
+        >
+          Live Feed
+        </button>
+        <button
+          onClick={() => setMainTab('deployed')}
+          className={`text-sm px-4 py-1.5 rounded border transition-colors flex items-center gap-2 ${mainTab === 'deployed' ? 'border-brand/50 bg-brand/10 text-brand' : 'border-surface-600 text-gray-400 hover:text-white'}`}
+        >
+          Deployed
+          {deployed.length > 0 && <span className="text-xs font-mono bg-brand/20 text-brand px-1.5 rounded">{deployed.length}</span>}
+        </button>
+      </div>
+
+      {mainTab === 'deployed' ? (
+        <DeployedPanel
+          tokens={deployed}
+          tokenInfos={tokenInfos}
+          tokenActions={tokenActions}
+          onSellAll={handleSellAll}
+          onClaimFees={handleClaimFees}
+          onRefreshInfo={loadTokenInfo}
+          hasSession={!!session}
+        />
+      ) : (
+
+      /* ---- Top bar ---- */
+      <div className="flex flex-col gap-4 flex-1 min-h-0">
       <div className="flex items-center gap-3 flex-wrap">
 
         {/* Stats */}
@@ -588,6 +706,8 @@ export default function LiveDeploysPage() {
           )}
         </div>
       </div>
+      </div>
+      )}
     </div>
   )
 }
@@ -989,6 +1109,168 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     <div>
       <label className="text-xs text-gray-500 block mb-1">{label}</label>
       {children}
+    </div>
+  )
+}
+
+// -------------------------------------------------------
+// Aba Deployed — gerenciamento de tokens lançados
+// -------------------------------------------------------
+
+function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFees, onRefreshInfo, hasSession }: {
+  tokens: DeployedToken[]
+  tokenInfos: Record<string, TokenInfo>
+  tokenActions: Record<string, TokenAction>
+  onSellAll: (mint: string, pct: number) => void
+  onClaimFees: (mint: string) => void
+  onRefreshInfo: (mint: string) => void
+  hasSession: boolean
+}) {
+  const [sellPct, setSellPct] = useState<Record<string, number>>({})
+
+  function getPct(mint: string) { return sellPct[mint] ?? 100 }
+
+  if (tokens.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <p className="text-gray-600 text-sm">Nenhum token deployado ainda via Live Deploys.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' }}>
+        {tokens.map(token => {
+          const draft = token.launch_drafts
+          const mint = token.mint_address
+          const info = tokenInfos[mint]
+          const action = tokenActions[mint]
+          const pct = getPct(mint)
+
+          return (
+            <div key={token.id} className="bg-surface-800 rounded-lg border border-surface-700 overflow-hidden">
+              {/* Header com imagem */}
+              <div className="flex items-center gap-3 p-3 border-b border-surface-700">
+                {draft?.image_url ? (
+                  <img src={draft.image_url} alt="" className="w-12 h-12 rounded object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-12 h-12 rounded bg-surface-700 flex-shrink-0 flex items-center justify-center text-gray-500 text-lg font-bold">
+                    {draft?.ticker?.[0] ?? '?'}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-white text-sm">{draft?.name ?? 'Token'}</span>
+                    <span className="text-xs text-brand font-mono">${draft?.ticker}</span>
+                  </div>
+                  {draft?.source_posts?.author_handle && (
+                    <a href={draft.source_posts.post_url ?? '#'} target="_blank" rel="noreferrer"
+                      className="text-xs text-gray-500 hover:text-brand">
+                      @{draft.source_posts.author_handle}
+                    </a>
+                  )}
+                  <div className="text-xs text-gray-600 mt-0.5">{timeAgo(token.created_at)}</div>
+                </div>
+                <button onClick={() => onRefreshInfo(mint)} className="text-xs text-gray-600 hover:text-white flex-shrink-0 px-1">
+                  ↺
+                </button>
+              </div>
+
+              {/* Info do token */}
+              <div className="px-3 py-2 flex items-center gap-4 border-b border-surface-700">
+                <div>
+                  <div className="text-xs text-gray-500">Saldo</div>
+                  <div className="text-sm font-mono text-white">
+                    {info ? Number(info.balance).toLocaleString() : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500">Preco</div>
+                  <div className="text-sm font-mono text-white">
+                    {info ? `${info.price.toFixed(8)} SOL` : '—'}
+                  </div>
+                </div>
+                <div className="ml-auto text-right">
+                  <div className="text-xs text-gray-500">Mint</div>
+                  <a
+                    href={`https://pump.fun/${mint}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs font-mono text-brand hover:underline"
+                  >
+                    {mint.slice(0, 6)}...{mint.slice(-4)}
+                  </a>
+                </div>
+              </div>
+
+              {/* TX */}
+              <div className="px-3 py-1.5 border-b border-surface-700 flex items-center gap-2">
+                <span className="text-xs text-gray-600">TX:</span>
+                <a
+                  href={`https://solscan.io/tx/${token.tx_hash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs font-mono text-gray-400 hover:text-white"
+                >
+                  {token.tx_hash?.slice(0, 20)}...
+                </a>
+              </div>
+
+              {/* Acoes */}
+              <div className="p-3 space-y-2.5">
+                {/* Sell slider */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-gray-400">Vender</span>
+                    <span className="text-xs font-mono text-white">{pct}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1} max={100}
+                    value={pct}
+                    onChange={e => setSellPct(prev => ({ ...prev, [mint]: Number(e.target.value) }))}
+                    className="w-full h-1.5 rounded accent-brand cursor-pointer"
+                  />
+                  <div className="flex gap-1 mt-1.5">
+                    {[25, 50, 75, 100].map(v => (
+                      <button
+                        key={v}
+                        onClick={() => setSellPct(prev => ({ ...prev, [mint]: v }))}
+                        className={`flex-1 text-xs py-0.5 rounded border transition-colors ${pct === v ? 'border-brand/60 text-brand' : 'border-surface-600 text-gray-500 hover:text-white'}`}
+                      >
+                        {v}%
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onSellAll(mint, pct)}
+                    disabled={!hasSession || action?.loading}
+                    className="flex-1 btn-primary text-xs py-2"
+                  >
+                    {action?.loading ? 'aguarde...' : `Sell ${pct}%`}
+                  </button>
+                  <button
+                    onClick={() => onClaimFees(mint)}
+                    disabled={!hasSession || action?.loading}
+                    className="px-3 py-2 rounded border border-surface-600 text-xs text-gray-400 hover:text-white hover:border-surface-400 transition-colors"
+                    title="Claim Fees"
+                  >
+                    Claim Fees
+                  </button>
+                </div>
+
+                {action?.result && <p className="text-xs text-green-400">{action.result}</p>}
+                {action?.error && <p className="text-xs text-danger">{action.error}</p>}
+                {!hasSession && <p className="text-xs text-yellow-500">Ative uma wallet para operar.</p>}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

@@ -276,6 +276,37 @@ liveDeploysRouter.post('/drafts/:id/deployed', async (req, res) => {
 })
 
 // -------------------------------------------------------
+// Tokens deployados (para aba de gerenciamento)
+// -------------------------------------------------------
+
+liveDeploysRouter.get('/deployed', async (_req, res) => {
+  if (!supabase) return noDb(res)
+  const { data, error } = await supabase
+    .from('deploy_runs')
+    .select(`
+      id,
+      deploy_status,
+      tx_hash,
+      mint_address,
+      created_at,
+      launch_drafts (
+        id,
+        name,
+        ticker,
+        description,
+        twitter_url,
+        image_url,
+        source_posts ( author_handle, post_url )
+      )
+    `)
+    .eq('deploy_status', 'success')
+    .not('mint_address', 'is', null)
+    .order('created_at', { ascending: false })
+  if (error) return res.status(500).json({ error: error.message })
+  res.json(data)
+})
+
+// -------------------------------------------------------
 // Worker: status e poll manual
 // -------------------------------------------------------
 
