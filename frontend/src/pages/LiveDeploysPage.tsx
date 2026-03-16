@@ -305,6 +305,9 @@ export default function LiveDeploysPage() {
 
   async function handleSellAll(mint: string, percentage: number) {
     if (!session) return alert('Ative uma wallet primeiro.')
+    if (!mint || mint.length < 32) {
+      return alert(`Mint address invalido: "${mint}". Verifique se o deploy foi registrado corretamente.`)
+    }
     setAction(mint, { loading: true, result: null, error: null })
     try {
       const res = await api.post<{ success: boolean; bundleId?: string; signature?: string; results?: any[]; error?: string }>(
@@ -1210,10 +1213,14 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
                   </div>
                   <div className="ml-auto text-right">
                     <div className="text-xs text-gray-500">Mint</div>
-                    <a href={`https://pump.fun/${mint}`} target="_blank" rel="noreferrer"
-                      className="text-xs font-mono text-brand hover:underline">
-                      {mint.slice(0, 6)}...{mint.slice(-4)}
-                    </a>
+                    {mint ? (
+                      <a href={`https://pump.fun/${mint}`} target="_blank" rel="noreferrer"
+                        className="text-xs font-mono text-brand hover:underline">
+                        {mint.slice(0, 6)}...{mint.slice(-4)}
+                      </a>
+                    ) : (
+                      <span className="text-xs text-red-400 font-mono">nao salvo</span>
+                    )}
                   </div>
                 </div>
 
