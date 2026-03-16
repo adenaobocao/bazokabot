@@ -11,6 +11,8 @@ import { api } from '../lib/api'
 export default function WalletsPage() {
   const [wallets, setWallets] = useState<StoredWallet[]>(loadWallets)
   const [mode, setMode] = useState<'list' | 'import' | 'generate'>('list')
+  const [sweeping, setSweeping] = useState<Record<string, boolean>>({})
+  const [sweepMsg, setSweepMsg] = useState<Record<string, string>>({})
 
   // Import form
   const [importLabel, setImportLabel] = useState('')
@@ -70,6 +72,28 @@ export default function WalletsPage() {
     if (!confirm('Remover essa wallet? (So remove o registro local, nao apaga os fundos)')) return
     removeWallet(publicKey)
     refresh()
+  }
+
+  async function handleSweep(w: StoredWallet) {
+    if (!confirm(`Enviar todo SOL de ${w.label} para sua wallet principal?`)) return
+    setSweeping(prev => ({ ...prev, [w.publicKey]: true }))
+    setSweepMsg(prev => ({ ...prev, [w.publicKey]: '' }))
+    try {
+      const res = await api.post<{ results: Array<{ success: boolean; solSwept?: number; error?: string }> }>(
+        '/wallet/sweep',
+        { fromPrivateKeys: [w.privateKeyBase58] }
+      )
+      const r = res.results[0]
+      if (r?.success) {
+        setSweepMsg(prev => ({ ...prev, [w.publicKey]: `${r.solSwept?.toFixed(4)} SOL enviados` }))
+      } else {
+        setSweepMsg(prev => ({ ...prev, [w.publicKey]: r?.error || 'Erro' }))
+      }
+    } catch (err: unknown) {
+      setSweepMsg(prev => ({ ...prev, [w.publicKey]: err instanceof Error ? err.message : 'Erro' }))
+    } finally {
+      setSweeping(prev => ({ ...prev, [w.publicKey]: false }))
+    }
   }
 
   if (mode === 'import') {
@@ -166,6 +190,14 @@ export default function WalletsPage() {
             <span className="font-semibold text-sm">{w.label}</span>
             <div className="flex gap-2">
               <button
+                onClick={() => handleSweep(w)}
+                disabled={sweeping[w.publicKey]}
+                className="btn-ghost text-xs px-2 py-1 disabled:opacity-40"
+                title="Enviar todo SOL desta wallet para sua wallet principal"
+              >
+                {sweeping[w.publicKey] ? 'enviando...' : 'sweep SOL'}
+              </button>
+              <button
                 onClick={() => setExportTarget(exportTarget === w.publicKey ? '' : w.publicKey)}
                 className="btn-ghost text-xs px-2 py-1"
               >
@@ -175,6 +207,11 @@ export default function WalletsPage() {
             </div>
           </div>
           <p className="text-gray-400 text-xs font-mono break-all">{w.publicKey}</p>
+          {sweepMsg[w.publicKey] && (
+            <p className={`text-xs ${sweepMsg[w.publicKey].includes('SOL') ? 'text-brand' : 'text-danger'}`}>
+              {sweepMsg[w.publicKey]}
+            </p>
+          )}
           {exportTarget === w.publicKey && (
             <div className="border-t border-surface-600 pt-2 space-y-1">
               <p className="font-mono text-xs break-all bg-surface-700 p-2 rounded border border-surface-600">

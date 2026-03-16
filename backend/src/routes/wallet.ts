@@ -146,3 +146,66 @@ walletRouter.post('/fund-bundles', async (req, res) => {
 
   res.json({ results })
 })
+
+// POST /api/wallet/sweep
+// Varre todo SOL de wallets de bundle de volta para a wallet da sessao
+// Body: { fromPrivateKeys: string[] }
+walletRouter.post('/sweep', async (req, res) => {
+  const session = (req as any).session as ActiveSession
+  const { fromPrivateKeys } = req.body
+
+  if (!Array.isArray(fromPrivateKeys) || fromPrivateKeys.length === 0) {
+    res.status(400).json({ error: 'fromPrivateKeys obrigatorio' })
+    return
+  }
+
+  const connection = getConnection()
+  const destination = Keypair.fromSecretKey(session.privateKeyBytes).publicKey
+  const TX_FEE_LAMPORTS = 5000
+  const results: Array<{ publicKey: string; success: boolean; solSwept?: number; signature?: string; error?: string }> = []
+
+  for (const pk of fromPrivateKeys) {
+    let from: Keypair
+    try {
+      from = Keypair.fromSecretKey(bs58.decode(pk))
+    } catch {
+      results.push({ publicKey: 'invalida', success: false, error: 'Private key invalida' })
+      continue
+    }
+
+    try {
+      const balance = await connection.getBalance(from.publicKey, 'confirmed')
+      const sendLamports = balance - TX_FEE_LAMPORTS
+      if (sendLamports <= 0) {
+        results.push({ publicKey: from.publicKey.toBase58(), success: false, error: 'Saldo insuficiente' })
+        continue
+      }
+
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: from.publicKey,
+          toPubkey: destination,
+          lamports: sendLamports,
+        })
+      )
+      const { blockhash } = await connection.getLatestBlockhash('confirmed')
+      tx.recentBlockhash = blockhash
+      tx.feePayer = from.publicKey
+      const sig = await sendAndConfirmTransaction(connection, tx, [from], { commitment: 'confirmed' })
+      results.push({
+        publicKey: from.publicKey.toBase58(),
+        success: true,
+        solSwept: sendLamports / LAMPORTS_PER_SOL,
+        signature: sig,
+      })
+    } catch (err: unknown) {
+      results.push({
+        publicKey: from.publicKey.toBase58(),
+        success: false,
+        error: err instanceof Error ? err.message : 'Erro no sweep',
+      })
+    }
+  }
+
+  res.json({ results })
+})

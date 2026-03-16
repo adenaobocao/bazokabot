@@ -209,6 +209,7 @@ export default function MonitorPage() {
           totalSolReceived: received,
           pnlSol: received - invested,
           pnlPct: invested > 0 ? ((received - invested) / invested) * 100 : 0,
+          devWalletPrivateKey: pos.devWalletPrivateKey,
           wallets: [
             { label: 'Dev wallet', solInvested: pos.devBuySol, solReceived: 0 },
             ...pos.bundleWallets.map(bw => ({
@@ -625,6 +626,21 @@ export default function MonitorPage() {
                 >
                   pump.fun
                 </a>
+              </div>
+              {/* Claim fees pos-fechamento */}
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  onClick={() => claimFees({ mint: trade.mint, devWalletPrivateKey: trade.devWalletPrivateKey } as any)}
+                  disabled={claimingFees[trade.mint]}
+                  className="text-xs text-brand/70 hover:text-brand transition-colors disabled:opacity-40"
+                >
+                  {claimingFees[trade.mint] ? 'enviando...' : 'claim fees'}
+                </button>
+                {claimMsg[trade.mint] && (
+                  <span className={`text-xs ${claimMsg[trade.mint] === 'Fees recebidas!' ? 'text-brand' : 'text-danger'}`}>
+                    {claimMsg[trade.mint]}
+                  </span>
+                )}
               </div>
             </div>
           ))}
