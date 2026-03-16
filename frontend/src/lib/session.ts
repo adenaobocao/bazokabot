@@ -8,20 +8,20 @@ export interface AuthState {
 }
 
 export function saveAuth(auth: AuthState): void {
-  sessionStorage.setItem('auth_token', auth.token)
-  sessionStorage.setItem('auth_username', auth.username)
+  localStorage.setItem('auth_token', auth.token)
+  localStorage.setItem('auth_username', auth.username)
 }
 
 export function loadAuth(): AuthState | null {
-  const token = sessionStorage.getItem('auth_token')
-  const username = sessionStorage.getItem('auth_username')
+  const token = localStorage.getItem('auth_token')
+  const username = localStorage.getItem('auth_username')
   if (!token || !username) return null
   return { token, username }
 }
 
 export function clearAuth(): void {
-  sessionStorage.removeItem('auth_token')
-  sessionStorage.removeItem('auth_username')
+  localStorage.removeItem('auth_token')
+  localStorage.removeItem('auth_username')
 }
 
 // --- WALLET SESSION (qual wallet esta ativa para assinar) ---
@@ -54,4 +54,13 @@ export function clearSession(): void {
 export function clearAll(): void {
   clearAuth()
   clearSession()
+}
+
+// Guarda qual wallet foi ativada por ultimo para auto-reconectar apos restart do servidor
+export function saveLastWallet(publicKey: string): void {
+  localStorage.setItem('last_wallet_pubkey', publicKey)
+}
+
+export function loadLastWalletPubkey(): string | null {
+  return localStorage.getItem('last_wallet_pubkey')
 }

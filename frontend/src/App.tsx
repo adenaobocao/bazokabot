@@ -1,8 +1,9 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { loadAuth, loadSession, clearAll, AuthState, SessionState } from './lib/session'
+import { loadAuth, loadSession, clearAll, saveSession, loadLastWalletPubkey, AuthState, SessionState } from './lib/session'
+import { loadWallets } from './lib/crypto'
 import { clearLegacyStorage } from './lib/crypto'
-import { setAuthExpiredHandler, setSessionExpiredHandler } from './lib/api'
+import { setAuthExpiredHandler, setSessionExpiredHandler, api } from './lib/api'
 import { SessionContext } from './lib/SessionContext'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
@@ -27,7 +28,28 @@ export default function App() {
       setSession(null)
     })
 
-    setSessionExpiredHandler(() => {
+    setSessionExpiredHandler(async () => {
+      // Tenta auto-reconectar com a ultima wallet usada antes de mostrar tela de login
+      const lastPubkey = loadLastWalletPubkey()
+      if (lastPubkey) {
+        const wallets = loadWallets()
+        const wallet = wallets.find(w => w.publicKey === lastPubkey) || wallets[0]
+        if (wallet) {
+          try {
+            const res = await api.post<{ token: string; publicKey: string }>(
+              '/wallet/session', { privateKeyBase58: wallet.privateKeyBase58 }
+            )
+            const newSession: SessionState = {
+              token: res.token,
+              publicKey: res.publicKey,
+              walletLabel: wallet.label,
+            }
+            saveSession(newSession)
+            setSession(newSession)
+            return
+          } catch { /* cai no setSession(null) abaixo */ }
+        }
+      }
       setSession(null)
     })
   }, [])

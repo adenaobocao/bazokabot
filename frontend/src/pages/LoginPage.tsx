@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { saveAuth, saveSession, AuthState, SessionState } from '../lib/session'
+import { saveAuth, saveSession, saveLastWallet, AuthState, SessionState } from '../lib/session'
 import { loadWallets, StoredWallet } from '../lib/crypto'
 import { api } from '../lib/api'
 
@@ -51,6 +51,7 @@ export default function LoginPage({ onLogin }: Props) {
         walletLabel: wallet.label,
       }
       saveSession(session)
+      saveLastWallet(session.publicKey)
       onLogin(authResult, session)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro ao ativar wallet')

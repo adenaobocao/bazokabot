@@ -3,11 +3,9 @@ import crypto from 'crypto'
 
 export const authRouter = Router()
 
-// Tokens de auth (sem private key — so identidade)
-// Separados das sessoes de wallet
-export const authTokens = new Map<string, { username: string; createdAt: number }>()
-
-const AUTH_TTL_MS = 12 * 60 * 60 * 1000 // 12 horas
+// Auth stateless: token = base64url(username) + "." + HMAC(username, password+salt)
+// Nao precisa de estado no servidor — sobrevive a restarts e redeploys
+const TOKEN_SALT = 'pump-launcher-auth-v1'
 
 function parseUsers(): Map<string, string> {
   const users = new Map<string, string>()
@@ -20,6 +18,28 @@ function parseUsers(): Map<string, string> {
     }
   }
   return users
+}
+
+function makeToken(username: string, password: string): string {
+  const user = username.toLowerCase()
+  const hmac = crypto.createHmac('sha256', password + TOKEN_SALT).update(user).digest('hex')
+  return Buffer.from(user).toString('base64url') + '.' + hmac
+}
+
+function validateToken(token: string): string | null {
+  try {
+    const dot = token.indexOf('.')
+    if (dot < 0) return null
+    const username = Buffer.from(token.slice(0, dot), 'base64url').toString()
+    const hmac = token.slice(dot + 1)
+    const users = parseUsers()
+    const password = users.get(username)
+    if (!password) return null
+    const expected = crypto.createHmac('sha256', password + TOKEN_SALT).update(username).digest('hex')
+    if (hmac.length !== expected.length) return null
+    if (!crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(expected, 'hex'))) return null
+    return username
+  } catch { return null }
 }
 
 // POST /api/auth/login
@@ -38,37 +58,27 @@ authRouter.post('/login', (req, res) => {
     return
   }
 
-  const token = crypto.randomBytes(32).toString('hex')
-  authTokens.set(token, { username: (username as string).toLowerCase(), createdAt: Date.now() })
-
+  const token = makeToken(username as string, expected)
   res.json({ token, username: (username as string).toLowerCase() })
 })
 
-// DELETE /api/auth/logout
-authRouter.delete('/logout', (req, res) => {
-  const token = req.headers['x-auth-token'] as string | undefined
-  if (token) authTokens.delete(token)
+// DELETE /api/auth/logout — client descarta o token localmente
+authRouter.delete('/logout', (_req, res) => {
   res.json({ ok: true })
 })
 
-// Middleware: valida auth token (nao wallet session)
+// Middleware: valida auth token sem precisar de estado no servidor
 export function authMiddleware(req: any, res: any, next: any) {
   const token = req.headers['x-auth-token'] as string | undefined
   if (!token) {
     res.status(401).json({ error: 'Auth token obrigatorio', type: 'auth' })
     return
   }
-  const auth = authTokens.get(token)
-  if (!auth) {
+  const username = validateToken(token)
+  if (!username) {
     res.status(401).json({ error: 'Nao autenticado', type: 'auth' })
     return
   }
-  if (Date.now() - auth.createdAt > AUTH_TTL_MS) {
-    authTokens.delete(token)
-    res.status(401).json({ error: 'Sessao expirada, faca login novamente', type: 'auth' })
-    return
-  }
-  auth.createdAt = Date.now()
-  req.authUser = auth.username
+  req.authUser = username
   next()
 }

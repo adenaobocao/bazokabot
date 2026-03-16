@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { ReactNode, useState, useEffect, useRef } from 'react'
-import { AuthState, SessionState, saveSession, clearSession } from '../lib/session'
+import { AuthState, SessionState, saveSession, saveLastWallet, clearSession } from '../lib/session'
 import { loadWallets } from '../lib/crypto'
 import { api } from '../lib/api'
 
@@ -51,6 +51,7 @@ export default function Layout({ auth, session, onLogout, onSessionChange, child
         walletLabel: wallet.label,
       }
       saveSession(newSession)
+      saveLastWallet(newSession.publicKey)
       onSessionChange(newSession)
       setPickerOpen(false)
     } catch (err: unknown) {
