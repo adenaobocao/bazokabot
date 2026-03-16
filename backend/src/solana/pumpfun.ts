@@ -350,16 +350,18 @@ export async function deploySequential(
     const slippage = SLIPPAGE[feeLevel]
 
     // Usa o estado real da curva (evita SDK misparse do GlobalAccount)
-    // Retry com backoff — RPC lento pode demorar a indexar o account apos o create
+    // Espera inicial de 3s: mesmo com commitment 'confirmed', o RPC pode demorar
+    // a indexar o account imediatamente apos sendAndConfirmTransaction retornar
+    await new Promise(r => setTimeout(r, 3000))
     let curve = await sdk.getBondingCurveAccount(mint.publicKey, 'confirmed')
     if (!curve) {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 8; i++) {
         await new Promise(r => setTimeout(r, 2000))
         curve = await sdk.getBondingCurveAccount(mint.publicKey, 'confirmed')
         if (curve) break
       }
     }
-    if (!curve) throw new Error('BondingCurve nao encontrada apos create (timeout 10s)')
+    if (!curve) throw new Error('BondingCurve nao encontrada apos create (timeout 19s)')
 
     const globalAccount = await sdk.getGlobalAccount('confirmed')
 
