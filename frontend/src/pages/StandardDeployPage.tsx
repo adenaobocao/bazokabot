@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { api } from '../lib/api'
 import { loadLpPositions, saveLpPosition, removeLpPosition, LpPosition } from '../lib/lp-positions'
+import { useSession } from '../lib/SessionContext'
 
 type Platform = 'raydium' | 'meteora'
 type Step = 'form' | 'uploading' | 'creating-token' | 'adding-lp' | 'done'
@@ -32,6 +33,19 @@ function toLocalDatetimeInputValue(ts: number): string {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function StandardDeployPage() {
+  const { session } = useSession()
+
+  if (!session) {
+    return (
+      <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
+        <p className="text-gray-300 font-medium">Nenhuma wallet ativa</p>
+        <p className="text-gray-500 text-sm max-w-xs">
+          Selecione uma wallet no canto superior direito antes de fazer deploy.
+        </p>
+      </div>
+    )
+  }
+
   // Token fields
   const [name, setName]           = useState('')
   const [symbol, setSymbol]       = useState('')
