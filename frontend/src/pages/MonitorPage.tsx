@@ -32,6 +32,8 @@ export default function MonitorPage() {
   const [useJito, setUseJito] = useState(true)
   const [claimingFees, setClaimingFees] = useState<Record<string, boolean>>({})
   const [claimMsg, setClaimMsg] = useState<Record<string, string>>({})
+  const [sweepingBundles, setSweepingBundles] = useState<Record<string, boolean>>({})
+  const [sweepBundleMsg, setSweepBundleMsg] = useState<Record<string, string>>({})
   const [vaultBalances, setVaultBalances] = useState<Record<string, number>>({})
   const [showRecover, setShowRecover] = useState(false)
   const [recoverForm, setRecoverForm] = useState<RecoverForm>({
@@ -123,6 +125,34 @@ export default function MonitorPage() {
         setPositions(loadPositions())
       }
     } catch { /* silencioso */ }
+  }
+
+  async function sweepBundleWallets(id: string, privKeys: string[]) {
+    const keys = privKeys.filter(Boolean)
+    if (keys.length === 0) {
+      setSweepBundleMsg(prev => ({ ...prev, [id]: 'Nenhuma chave disponivel' }))
+      return
+    }
+    setSweepingBundles(prev => ({ ...prev, [id]: true }))
+    setSweepBundleMsg(prev => ({ ...prev, [id]: '' }))
+    try {
+      const res = await api.post<{ results: Array<{ success: boolean; solSwept?: number; error?: string }> }>(
+        '/wallet/sweep', { fromPrivateKeys: keys }
+      )
+      const total = res.results.reduce((s, r) => s + (r.solSwept || 0), 0)
+      const successes = res.results.filter(r => r.success).length
+      if (successes > 0) {
+        setSweepBundleMsg(prev => ({ ...prev, [id]: `${total.toFixed(4)} SOL recuperados` }))
+      } else {
+        setSweepBundleMsg(prev => ({
+          ...prev, [id]: res.results.find(r => !r.success)?.error || 'Saldo insuficiente'
+        }))
+      }
+    } catch (err: unknown) {
+      setSweepBundleMsg(prev => ({ ...prev, [id]: err instanceof Error ? err.message : 'Erro' }))
+    } finally {
+      setSweepingBundles(prev => ({ ...prev, [id]: false }))
+    }
   }
 
   async function claimFees(pos: Position) {
@@ -277,6 +307,9 @@ export default function MonitorPage() {
           pnlSol: received - invested,
           pnlPct: invested > 0 ? ((received - invested) / invested) * 100 : 0,
           devWalletPrivateKey: pos.devWalletPrivateKey,
+          bundleWalletKeys: pos.bundleWallets
+            .map(bw => bw.privateKeyBase58)
+            .filter(Boolean) as string[],
           wallets: [
             { label: 'Dev wallet', solInvested: pos.devBuySol, solReceived: 0 },
             ...pos.bundleWallets.map(bw => ({
@@ -721,6 +754,30 @@ export default function MonitorPage() {
               <p className="text-danger text-xs">{sellError[pos.mint]}</p>
             )}
 
+            {/* Desfinanciar wallets bundle */}
+            {pos.bundleWallets.some(bw => bw.privateKeyBase58) && (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => sweepBundleWallets(
+                    pos.mint,
+                    [
+                      ...(pos.devWalletPrivateKey ? [pos.devWalletPrivateKey] : []),
+                      ...pos.bundleWallets.map(bw => bw.privateKeyBase58).filter(Boolean) as string[],
+                    ]
+                  )}
+                  disabled={sweepingBundles[pos.mint]}
+                  className="px-3 py-1 text-xs rounded border border-surface-500 text-gray-400 hover:text-white hover:border-surface-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {sweepingBundles[pos.mint] ? 'enviando...' : 'desfinanciar wallets'}
+                </button>
+                {sweepBundleMsg[pos.mint] && (
+                  <span className={`text-xs ${sweepBundleMsg[pos.mint].includes('SOL') ? 'text-brand' : 'text-danger'}`}>
+                    {sweepBundleMsg[pos.mint]}
+                  </span>
+                )}
+              </div>
+            )}
+
             <button
               onClick={() => closePosition(pos)}
               className="text-gray-600 text-xs hover:text-gray-400 transition-colors"
@@ -815,8 +872,8 @@ export default function MonitorPage() {
                   pump.fun
                 </a>
               </div>
-              {/* Claim fees pos-fechamento */}
-              <div className="mt-3 flex items-center gap-3">
+              {/* Claim fees + desfinanciar pos-fechamento */}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => claimFees({ mint: trade.mint, devWalletPrivateKey: trade.devWalletPrivateKey } as any)}
                   disabled={claimingFees[trade.mint]}
@@ -824,9 +881,29 @@ export default function MonitorPage() {
                 >
                   {claimingFees[trade.mint] ? 'enviando...' : 'claim fees'}
                 </button>
+                {(trade.devWalletPrivateKey || (trade.bundleWalletKeys && trade.bundleWalletKeys.length > 0)) && (
+                  <button
+                    onClick={() => sweepBundleWallets(
+                      trade.id,
+                      [
+                        ...(trade.devWalletPrivateKey ? [trade.devWalletPrivateKey] : []),
+                        ...(trade.bundleWalletKeys || []),
+                      ]
+                    )}
+                    disabled={sweepingBundles[trade.id]}
+                    className="px-3 py-1 text-xs rounded border border-surface-500 text-gray-400 hover:text-white hover:border-surface-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {sweepingBundles[trade.id] ? 'enviando...' : 'desfinanciar'}
+                  </button>
+                )}
                 {claimMsg[trade.mint] && (
                   <span className={`text-xs ${claimMsg[trade.mint] === 'Fees recebidas!' ? 'text-brand' : 'text-danger'}`}>
                     {claimMsg[trade.mint]}
+                  </span>
+                )}
+                {sweepBundleMsg[trade.id] && (
+                  <span className={`text-xs ${sweepBundleMsg[trade.id].includes('SOL') ? 'text-brand' : 'text-danger'}`}>
+                    {sweepBundleMsg[trade.id]}
                   </span>
                 )}
               </div>

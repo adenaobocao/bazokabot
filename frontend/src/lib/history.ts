@@ -11,6 +11,7 @@ export interface ClosedTrade {
   pnlPct: number
   wallets: Array<{ label: string; solInvested: number; solReceived: number }>
   devWalletPrivateKey?: string   // para claim de fees pos-fechamento
+  bundleWalletKeys?: string[]    // para desfinanciar wallets bundle pos-fechamento
 }
 
 const KEY = 'pump_history'
