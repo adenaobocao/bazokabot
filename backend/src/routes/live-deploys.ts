@@ -38,6 +38,10 @@ liveDeploysRouter.post('/sources', async (req, res) => {
     .select()
     .single()
   if (error) return res.status(500).json({ error: error.message })
+
+  // Dispara poll imediato ao adicionar nova conta
+  triggerPollNow().catch(() => {})
+
   res.json(data)
 })
 
@@ -312,6 +316,7 @@ liveDeploysRouter.post('/seed-watchlist', async (_req, res) => {
       results.push({ handle, ok: false })
     }
   }
+  triggerPollNow().catch(() => {})
   res.json({ added: results.filter(r => r.ok).length, results })
 })
 

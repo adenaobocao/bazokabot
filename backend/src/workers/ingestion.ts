@@ -11,7 +11,7 @@ export function setBroadcastFn(fn: BroadcastFn) {
   _broadcast = fn
 }
 
-const POLL_INTERVAL_MS = 5 * 60 * 1000 // 5 minutos
+const POLL_INTERVAL_MS = 2 * 60 * 1000 // 2 minutos
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
 // Cache em memoria para deduplicar na mesma sessao

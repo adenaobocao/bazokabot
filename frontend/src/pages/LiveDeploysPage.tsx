@@ -219,10 +219,13 @@ export default function LiveDeploysPage() {
   }, [filterStatus, filterScore, filterMedia, selected?.id])
 
   useEffect(() => { loadAll() }, [filterStatus, filterScore, filterMedia])
+
+  // Refresh automatico: 10s se tem fontes, 30s se nao tem
   useEffect(() => {
-    const t = setInterval(loadAll, 20_000)
+    const interval = sources.length > 0 ? 10_000 : 30_000
+    const t = setInterval(loadAll, interval)
     return () => clearInterval(t)
-  }, [loadAll])
+  }, [loadAll, sources.length])
 
   // WebSocket
   useEffect(() => {
