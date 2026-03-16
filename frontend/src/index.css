@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-surface-900 text-white font-mono;
+    font-feature-settings: 'liga' 1, 'calt' 1;
+  }
+
+  /* Scrollbar minimalista */
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-800;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-brand-dark rounded;
+  }
+
+  input, textarea, select {
+    @apply bg-surface-700 border border-surface-600 text-white rounded px-3 py-2
+           focus:outline-none focus:border-brand transition-colors;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-brand text-black font-semibold px-4 py-2 rounded
+           hover:bg-brand-dim transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-danger {
+    @apply bg-danger text-white font-semibold px-4 py-2 rounded
+           hover:opacity-80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply border border-surface-600 text-white px-4 py-2 rounded
+           hover:border-brand hover:text-brand transition-colors;
+  }
+
+  .card {
+    @apply bg-surface-800 border border-surface-600 rounded-lg p-4;
+  }
+
+  .label {
+    @apply text-xs text-gray-400 mb-1 block;
+  }
+
+  .badge-green {
+    @apply text-xs bg-brand-dark text-brand px-2 py-0.5 rounded;
+  }
+
+  .badge-red {
+    @apply text-xs bg-red-900 text-danger px-2 py-0.5 rounded;
+  }
+}
