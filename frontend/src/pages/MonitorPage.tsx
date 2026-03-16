@@ -53,8 +53,14 @@ export default function MonitorPage() {
     setPositions(pos)
     setHistory(loadHistory())
     connectWS(pos)
-    // Carrega saldos dos creator_vaults ao abrir a pagina
-    pos.forEach(p => fetchVaultBalance(p))
+    pos.forEach(p => {
+      fetchVaultBalance(p)
+      // Se tokenAmounts estao zerados (deploy recente), busca saldos reais da blockchain
+      const hasZeroAmounts =
+        (p.devTokenAmount === '0' || p.devTokenAmount === '') &&
+        p.bundleWallets.every(bw => bw.tokenAmount === '0' || bw.tokenAmount === '')
+      if (hasZeroAmounts) fetchTokenBalances(p)
+    })
     return () => { wsRef.current?.close() }
   }, [])
 
@@ -69,6 +75,52 @@ export default function MonitorPage() {
       const res = await api.get<{ balance: number }>(`/token/creator-vault-balance?${params}`)
       if (res.balance > 0) {
         setVaultBalances(prev => ({ ...prev, [pos.mint]: res.balance }))
+      }
+    } catch { /* silencioso */ }
+  }
+
+  async function fetchTokenBalances(pos: Position) {
+    try {
+      const updatedPos = { ...pos, bundleWallets: pos.bundleWallets.map(bw => ({ ...bw })) }
+
+      // Coleta private keys disponíveis (fresh dev wallet + bundle wallets)
+      const privKeys: string[] = []
+      if (pos.devWalletPrivateKey && pos.devTokenAmount === '0') {
+        privKeys.push(pos.devWalletPrivateKey)
+      }
+      pos.bundleWallets.forEach(bw => {
+        if ((bw.tokenAmount === '0' || bw.tokenAmount === '') && bw.privateKeyBase58) {
+          privKeys.push(bw.privateKeyBase58)
+        }
+      })
+
+      if (privKeys.length > 0) {
+        const { balances } = await api.post<{ balances: { publicKey: string; balance: string }[] }>(
+          `/token/${pos.mint}/balance-bundle`, { walletKeys: privKeys }
+        )
+        const map: Record<string, string> = {}
+        balances.forEach(b => { map[b.publicKey] = b.balance })
+
+        if (pos.devWalletPrivateKey && pos.devWalletPublicKey && map[pos.devWalletPublicKey]) {
+          updatedPos.devTokenAmount = map[pos.devWalletPublicKey]
+        }
+        updatedPos.bundleWallets = pos.bundleWallets.map(bw => ({
+          ...bw,
+          tokenAmount: (map[bw.publicKey] && (bw.tokenAmount === '0' || bw.tokenAmount === ''))
+            ? map[bw.publicKey]
+            : bw.tokenAmount,
+        }))
+      } else if (!pos.devWalletPrivateKey && pos.devTokenAmount === '0') {
+        // Dev wallet é a wallet de sessão — usa endpoint /info
+        const { balance } = await api.get<{ balance: string }>(`/token/${pos.mint}/info`)
+        if (balance && balance !== '0') updatedPos.devTokenAmount = balance
+      }
+
+      const changed = updatedPos.devTokenAmount !== pos.devTokenAmount ||
+        updatedPos.bundleWallets.some((bw, i) => bw.tokenAmount !== pos.bundleWallets[i].tokenAmount)
+      if (changed) {
+        savePosition(updatedPos)
+        setPositions(loadPositions())
       }
     } catch { /* silencioso */ }
   }
@@ -764,11 +816,11 @@ export default function MonitorPage() {
                 </a>
               </div>
               {/* Claim fees pos-fechamento */}
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-3 flex items-center gap-3">
                 <button
                   onClick={() => claimFees({ mint: trade.mint, devWalletPrivateKey: trade.devWalletPrivateKey } as any)}
                   disabled={claimingFees[trade.mint]}
-                  className="text-xs text-brand/70 hover:text-brand transition-colors disabled:opacity-40"
+                  className="px-3 py-1 text-xs rounded border border-brand/30 text-brand hover:bg-brand/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {claimingFees[trade.mint] ? 'enviando...' : 'claim fees'}
                 </button>

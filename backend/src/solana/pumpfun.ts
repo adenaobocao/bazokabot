@@ -104,8 +104,8 @@ const SELL_DISCRIMINATOR: Buffer = (() => {
   return Buffer.from(hash.slice(0, 8))
 })()
 
-const WITHDRAW_DISCRIMINATOR: Buffer = (() => {
-  const hash = createHash('sha256').update('global:withdraw').digest()
+const COLLECT_CREATOR_FEE_DISCRIMINATOR: Buffer = (() => {
+  const hash = createHash('sha256').update('global:collect_creator_fee').digest()
   return Buffer.from(hash.slice(0, 8))
 })()
 
@@ -506,16 +506,15 @@ export async function buildSellTx(
 
 // --- CLAIM CREATOR VAULT FEES ---
 //
-// Instrucao "withdraw": retira SOL acumulado no creator_vault de volta pro criador
-// O creator_vault acumula as fees de cashback que o programa repassa ao criador a cada trade
+// Instrucao "CollectCreatorFee": retira SOL acumulado no creator_vault de volta pro criador
+// Discriminador: sha256("global:collect_creator_fee")[0:8] = 1416567bc61cdb84
 //
-// Accounts (ordem confirmada pelo IDL pump.fun global:withdraw):
-//   0: global          (readonly)
-//   1: creator         (signer, writable) — recebe o SOL
-//   2: creator_vault   (writable)         — fonte do SOL
-//   3: system_program  (readonly)
-//   4: event_authority (readonly)
-//   5: pump_fun_program (readonly)
+// Accounts confirmados por tx real on-chain (5 accounts, sem GLOBAL_ACCOUNT):
+//   0: creator         (signer, writable) — recebe o SOL
+//   1: creator_vault   (writable)         — fonte do SOL
+//   2: system_program  (readonly)
+//   3: event_authority (readonly)
+//   4: pump_fun_program (readonly)
 
 export async function getCreatorVaultBalance(
   connection: Connection,
@@ -539,17 +538,16 @@ export async function buildWithdrawTx(
 ): Promise<Transaction> {
   const creatorVault = getCreatorVaultPDA(creator.publicKey)
 
-  const data = Buffer.from(WITHDRAW_DISCRIMINATOR)
+  const data = Buffer.from(COLLECT_CREATOR_FEE_DISCRIMINATOR)
 
   const ix = new TransactionInstruction({
     programId: PUMP_FUN_PROGRAM_ID,
     keys: [
-      { pubkey: GLOBAL_ACCOUNT,      isSigner: false, isWritable: false }, // 0 global
-      { pubkey: creator.publicKey,   isSigner: true,  isWritable: true  }, // 1 creator
-      { pubkey: creatorVault,        isSigner: false, isWritable: true  }, // 2 creator_vault
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 3 system_program
-      { pubkey: EVENT_AUTHORITY,     isSigner: false, isWritable: false }, // 4 event_authority
-      { pubkey: PUMP_FUN_PROGRAM_ID, isSigner: false, isWritable: false }, // 5 program
+      { pubkey: creator.publicKey,       isSigner: true,  isWritable: true  }, // 0 creator
+      { pubkey: creatorVault,            isSigner: false, isWritable: true  }, // 1 creator_vault
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, // 2 system_program
+      { pubkey: EVENT_AUTHORITY,         isSigner: false, isWritable: false }, // 3 event_authority
+      { pubkey: PUMP_FUN_PROGRAM_ID,     isSigner: false, isWritable: false }, // 4 program
     ],
     data,
   })
