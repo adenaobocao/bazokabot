@@ -22,7 +22,7 @@ async function request<T>(
     'Content-Type': 'application/json',
   }
 
-  const authToken = sessionStorage.getItem('auth_token')
+  const authToken = localStorage.getItem('auth_token')
   if (authToken) headers['x-auth-token'] = authToken
 
   const sessionToken = sessionStorage.getItem('session_token')
@@ -45,6 +45,8 @@ async function request<T>(
       onSessionExpired?.()
     } else {
       // Auth expirou — logout completo
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('auth_username')
       sessionStorage.clear()
       onAuthExpired?.()
     }

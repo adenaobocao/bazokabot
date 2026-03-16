@@ -8,6 +8,7 @@ import { healthRouter } from './routes/health'
 import { walletRouter } from './routes/wallet'
 import { tokenRouter } from './routes/token'
 import { monitorRouter } from './routes/monitor'
+import { standardRouter } from './routes/standard'
 import { sessionMiddleware } from './middleware/session'
 import { authRouter, authMiddleware } from './routes/auth'
 
@@ -49,6 +50,7 @@ app.use('/api', (req, res, next) => {
 app.use('/api/wallet', walletRouter)
 app.use('/api/token', tokenRouter)
 app.use('/api/monitor', monitorRouter)
+app.use('/api/standard', standardRouter)
 
 // WebSocket: associa conexao ao session token
 wss.on('connection', (ws, req) => {

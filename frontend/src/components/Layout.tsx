@@ -82,7 +82,8 @@ export default function Layout({ auth, session, onLogout, onSessionChange, child
             Pump Launcher
           </span>
           <nav className="flex gap-1">
-            <NavLink to="/deploy" className={navClass}>Deploy</NavLink>
+            <NavLink to="/deploy" className={navClass}>Pump Deploy</NavLink>
+            <NavLink to="/standard" className={navClass}>Standard Deploy</NavLink>
             <NavLink to="/monitor" className={navClass}>Monitor</NavLink>
             <NavLink to="/wallets" className={navClass}>Wallets</NavLink>
           </nav>

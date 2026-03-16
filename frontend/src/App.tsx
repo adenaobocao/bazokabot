@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage'
 import DeployPage from './pages/DeployPage'
 import WalletsPage from './pages/WalletsPage'
 import MonitorPage from './pages/MonitorPage'
+import StandardDeployPage from './pages/StandardDeployPage'
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -83,6 +84,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/deploy" replace />} />
           <Route path="/deploy" element={<DeployPage />} />
+          <Route path="/standard" element={<StandardDeployPage />} />
           <Route path="/wallets" element={<WalletsPage />} />
           <Route path="/monitor" element={<MonitorPage />} />
         </Routes>

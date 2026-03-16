@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { saveAuth, saveSession, saveLastWallet, AuthState, SessionState } from '../lib/session'
-import { loadWallets, StoredWallet } from '../lib/crypto'
+import { loadWallets, saveWallet, StoredWallet } from '../lib/crypto'
 import { api } from '../lib/api'
 
 interface Props {
@@ -16,7 +16,19 @@ export default function LoginPage({ onLogin }: Props) {
   const [loading, setLoading] = useState(false)
   const [activating, setActivating] = useState<string | null>(null)
 
-  const wallets = loadWallets()
+  // Criação de wallet inline (tela de seleção)
+  const [createMode, setCreateMode] = useState<'none' | 'generate' | 'import'>('none')
+  const [genKey, setGenKey] = useState('')
+  const [genPubkey, setGenPubkey] = useState('')
+  const [genLabel, setGenLabel] = useState('')
+  const [genLoading, setGenLoading] = useState(false)
+  const [importKey, setImportKey] = useState('')
+  const [importLabel, setImportLabel] = useState('')
+  const [createError, setCreateError] = useState('')
+
+  const [wallets, setWallets] = useState<StoredWallet[]>(loadWallets)
+
+  function refreshWallets() { setWallets(loadWallets()) }
 
   async function handleAuth() {
     if (!username.trim() || !password) { setError('Preencha usuario e senha'); return }
@@ -34,6 +46,47 @@ export default function LoginPage({ onLogin }: Props) {
       setError(err instanceof Error ? err.message : 'Erro ao entrar')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleGenerate() {
+    setGenLoading(true)
+    setCreateError('')
+    try {
+      const res = await api.post<{ publicKey: string; privateKeyBase58: string }>('/wallet/generate')
+      setGenKey(res.privateKeyBase58)
+      setGenPubkey(res.publicKey)
+      setCreateMode('generate')
+    } catch (err: unknown) {
+      setCreateError(err instanceof Error ? err.message : 'Erro ao gerar wallet')
+    } finally {
+      setGenLoading(false)
+    }
+  }
+
+  async function handleSaveGenerated() {
+    if (!genLabel.trim()) { setCreateError('Dê um nome para a wallet'); return }
+    saveWallet({ label: genLabel.trim(), publicKey: genPubkey, privateKeyBase58: genKey })
+    refreshWallets()
+    setCreateMode('none')
+    setGenLabel(''); setGenKey(''); setGenPubkey('')
+    // Ativa automaticamente a wallet recém-criada
+    await handleSelectWallet({ label: genLabel.trim(), publicKey: genPubkey, privateKeyBase58: genKey })
+  }
+
+  async function handleSaveImport() {
+    if (!importLabel.trim() || !importKey.trim()) { setCreateError('Preencha nome e private key'); return }
+    setCreateError('')
+    try {
+      const { parsePrivateKeyFull } = await import('../lib/crypto')
+      const { base58, publicKey } = await parsePrivateKeyFull(importKey.trim())
+      saveWallet({ label: importLabel.trim(), publicKey, privateKeyBase58: base58 })
+      refreshWallets()
+      setCreateMode('none')
+      setImportLabel(''); setImportKey('')
+      await handleSelectWallet({ label: importLabel.trim(), publicKey, privateKeyBase58: base58 })
+    } catch (err: unknown) {
+      setCreateError(err instanceof Error ? err.message : 'Private key inválida')
     }
   }
 
@@ -74,24 +127,67 @@ export default function LoginPage({ onLogin }: Props) {
             </p>
           </div>
 
-          {wallets.length === 0 ? (
-            <div className="space-y-3 text-center">
-              <p className="text-gray-400 text-sm">Nenhuma wallet criada ainda.</p>
-              <p className="text-gray-500 text-xs">
-                Voce pode criar sua primeira wallet apos entrar, em <span className="text-brand">Wallets</span>.
-              </p>
+          {wallets.length === 0 && createMode === 'none' ? (
+            <div className="space-y-3">
+              <p className="text-gray-400 text-sm text-center">Nenhuma wallet criada ainda.</p>
               <button
-                onClick={() => {
-                  // Entra sem wallet ativa — vai criar depois
-                  if (!authResult) return
-                  // Cria uma session dummy? Na verdade nao precisa de session pra entrar
-                  // Apenas sinalizamos que nao ha wallet e deixamos o user entrar
-                  onLogin(authResult, { token: '', publicKey: '', walletLabel: '' })
-                }}
+                onClick={handleGenerate}
+                disabled={genLoading}
                 className="btn-primary w-full"
+              >
+                {genLoading ? 'gerando...' : 'gerar nova wallet'}
+              </button>
+              <button
+                onClick={() => { setCreateMode('import'); setCreateError('') }}
+                className="btn-ghost w-full"
+              >
+                importar private key
+              </button>
+              <button
+                onClick={() => authResult && onLogin(authResult, { token: '', publicKey: '', walletLabel: '' })}
+                className="text-gray-600 hover:text-gray-400 text-xs w-full text-center transition-colors"
               >
                 entrar sem wallet
               </button>
+            </div>
+          ) : wallets.length === 0 && createMode === 'generate' ? (
+            <div className="space-y-3">
+              <div className="bg-yellow-900/30 border border-yellow-700/40 rounded p-3 text-xs text-yellow-400">
+                <p className="font-semibold">Salve a private key agora.</p>
+                <p className="text-yellow-500/80 mt-0.5">Sem ela não é possível recuperar os fundos.</p>
+              </div>
+              <div>
+                <p className="label">Public Key</p>
+                <p className="text-brand text-xs font-mono break-all">{genPubkey}</p>
+              </div>
+              <div>
+                <p className="label">Private Key</p>
+                <div className="bg-surface-700 border border-surface-600 rounded p-2 flex items-center justify-between gap-2">
+                  <p className="font-mono text-xs break-all">{genKey}</p>
+                  <button onClick={() => navigator.clipboard.writeText(genKey)} className="btn-ghost text-xs px-2 py-1 shrink-0">copiar</button>
+                </div>
+              </div>
+              <div>
+                <label className="label">Nome da wallet</label>
+                <input value={genLabel} onChange={e => setGenLabel(e.target.value)} className="w-full" placeholder="Ex: Principal" autoFocus onKeyDown={e => e.key === 'Enter' && handleSaveGenerated()} />
+              </div>
+              {createError && <p className="text-danger text-xs">{createError}</p>}
+              <button onClick={handleSaveGenerated} disabled={!genLabel.trim()} className="btn-primary w-full">salvar e entrar</button>
+              <button onClick={() => setCreateMode('none')} className="btn-ghost w-full text-xs">voltar</button>
+            </div>
+          ) : wallets.length === 0 && createMode === 'import' ? (
+            <div className="space-y-3">
+              <div>
+                <label className="label">Nome</label>
+                <input value={importLabel} onChange={e => setImportLabel(e.target.value)} className="w-full" placeholder="Ex: Principal" autoFocus />
+              </div>
+              <div>
+                <label className="label">Private Key</label>
+                <input value={importKey} onChange={e => setImportKey(e.target.value)} type="password" className="w-full font-mono text-xs" placeholder="5Jxxx... ou [12,34,...]" onKeyDown={e => e.key === 'Enter' && handleSaveImport()} />
+              </div>
+              {createError && <p className="text-danger text-xs">{createError}</p>}
+              <button onClick={handleSaveImport} className="btn-primary w-full">importar e entrar</button>
+              <button onClick={() => setCreateMode('none')} className="btn-ghost w-full text-xs">voltar</button>
             </div>
           ) : (
             <div className="space-y-2">
@@ -119,12 +215,14 @@ export default function LoginPage({ onLogin }: Props) {
 
           {error && <p className="text-danger text-xs">{error}</p>}
 
-          <button
-            onClick={() => { setStep('auth'); setError('') }}
-            className="btn-ghost w-full text-xs"
-          >
-            voltar
-          </button>
+          {createMode === 'none' && (
+            <button
+              onClick={() => { setStep('auth'); setError('') }}
+              className="btn-ghost w-full text-xs"
+            >
+              voltar
+            </button>
+          )}
         </div>
       </div>
     )
