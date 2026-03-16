@@ -267,6 +267,15 @@ export default function LiveDeploysPage() {
     }
   }, [mainTab, deployed.length, session])
 
+  // Auto-refresh precos a cada 5s na aba Deployed
+  useEffect(() => {
+    if (mainTab !== 'deployed' || !session || deployed.length === 0) return
+    const t = setInterval(() => {
+      deployed.forEach(d => { if (d.mint_address) loadTokenInfo(d.mint_address) })
+    }, 5_000)
+    return () => clearInterval(t)
+  }, [mainTab, session, deployed, loadTokenInfo])
+
   useEffect(() => { loadAll() }, [filterStatus, filterScore, filterMedia])
 
   // Refresh automatico: 10s se tem fontes, 30s se nao tem
@@ -303,7 +312,7 @@ export default function LiveDeploysPage() {
     }))
   }
 
-  async function handleSellAll(mint: string, percentage: number) {
+  async function handleSellAll(mint: string, percentage: number, feeLevel: string = 'fast') {
     if (!session) return alert('Ative uma wallet primeiro.')
     if (!mint || mint.length < 32) {
       return alert(`Mint address invalido: "${mint}". Verifique se o deploy foi registrado corretamente.`)
@@ -312,7 +321,7 @@ export default function LiveDeploysPage() {
     try {
       const res = await api.post<{ success: boolean; bundleId?: string; signature?: string; results?: any[]; error?: string }>(
         '/token/sell-all',
-        { mint, percentage, includeDevWallet: true, wallets: [], feeLevel: 'fast', useJito: true }
+        { mint, percentage, includeDevWallet: true, wallets: [], feeLevel, useJito: true }
       )
       if (res.success) {
         const id = res.bundleId ?? res.signature ?? res.results?.[0]?.signature
@@ -540,15 +549,23 @@ export default function LiveDeploysPage() {
       </div>
 
       {mainTab === 'deployed' ? (
-        <DeployedPanel
-          tokens={deployed}
-          tokenInfos={tokenInfos}
-          tokenActions={tokenActions}
-          onSellAll={handleSellAll}
-          onClaimFees={handleClaimFees}
-          onRefreshInfo={loadTokenInfo}
-          hasSession={!!session}
-        />
+        <>
+          {session && deployed.length > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-gray-600">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              precos atualizando a cada 5s
+            </div>
+          )}
+          <DeployedPanel
+            tokens={deployed}
+            tokenInfos={tokenInfos}
+            tokenActions={tokenActions}
+            onSellAll={handleSellAll}
+            onClaimFees={handleClaimFees}
+            onRefreshInfo={loadTokenInfo}
+            hasSession={!!session}
+          />
+        </>
       ) : (
 
       /* ---- Top bar ---- */
@@ -1136,18 +1153,26 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // Aba Deployed — gerenciamento de tokens lançados
 // -------------------------------------------------------
 
+const SLIPPAGE_OPTIONS: { label: string; value: string }[] = [
+  { label: '1% (fast)', value: 'fast' },
+  { label: '3% (turbo)', value: 'turbo' },
+  { label: '5%+ (ultra)', value: 'ultra' },
+]
+
 function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFees, onRefreshInfo, hasSession }: {
   tokens: DeployedToken[]
   tokenInfos: Record<string, TokenInfo>
   tokenActions: Record<string, TokenAction>
-  onSellAll: (mint: string, pct: number) => void
+  onSellAll: (mint: string, pct: number, feeLevel: string) => void
   onClaimFees: (mint: string) => void
   onRefreshInfo: (mint: string) => void
   hasSession: boolean
 }) {
   const [sellPct, setSellPct] = useState<Record<string, number>>({})
+  const [slippage, setSlippage] = useState<Record<string, string>>({})
 
   function getPct(mint: string) { return sellPct[mint] ?? 100 }
+  function getSlippage(mint: string) { return slippage[mint] ?? 'fast' }
 
   if (tokens.length === 0) {
     return (
@@ -1166,6 +1191,8 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
           const info = tokenInfos[mint]
           const action = tokenActions[mint]
           const pct = getPct(mint)
+          const slip = getSlippage(mint)
+          const estimatedSol = info ? Number(info.balance) * (pct / 100) * info.price : null
 
           return (
             <div key={token.id} className="bg-surface-800 rounded-lg border border-surface-700 overflow-hidden">
@@ -1198,55 +1225,63 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
 
               {/* Info + PnL */}
               <div className="px-3 py-2 border-b border-surface-700 space-y-2">
-                <div className="flex items-center gap-4">
-                  <div>
-                    <div className="text-xs text-gray-500">Saldo</div>
-                    <div className="text-sm font-mono text-white">
-                      {info ? Number(info.balance).toLocaleString() : '—'}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500">Preco</div>
-                    <div className="text-sm font-mono text-white">
-                      {info ? `${info.price.toFixed(8)}◎` : '—'}
-                    </div>
-                  </div>
-                  <div className="ml-auto text-right">
-                    <div className="text-xs text-gray-500">Mint</div>
-                    {mint ? (
-                      <a href={`https://pump.fun/${mint}`} target="_blank" rel="noreferrer"
-                        className="text-xs font-mono text-brand hover:underline">
-                        {mint.slice(0, 6)}...{mint.slice(-4)}
-                      </a>
-                    ) : (
-                      <span className="text-xs text-red-400 font-mono">nao salvo</span>
-                    )}
-                  </div>
-                </div>
-
-                {/* PnL */}
-                {info && token.dev_buy_sol > 0 && (() => {
+                {/* Valor atual em destaque */}
+                {info ? (() => {
                   const currentValueSol = Number(info.balance) * info.price
-                  const pnlSol = currentValueSol - token.dev_buy_sol
-                  const pnlPct = (pnlSol / token.dev_buy_sol) * 100
-                  const isPos = pnlSol >= 0
+                  const pnlSol = token.dev_buy_sol > 0 ? currentValueSol - token.dev_buy_sol : null
+                  const pnlPct = pnlSol !== null && token.dev_buy_sol > 0 ? (pnlSol / token.dev_buy_sol) * 100 : null
+                  const isPos = pnlSol === null || pnlSol >= 0
                   return (
-                    <div className={`rounded px-2 py-1.5 flex items-center justify-between ${isPos ? 'bg-green-900/30 border border-green-800/50' : 'bg-red-900/30 border border-red-800/50'}`}>
-                      <div>
-                        <div className="text-xs text-gray-400">PnL estimado</div>
-                        <div className={`text-sm font-mono font-bold ${isPos ? 'text-green-300' : 'text-red-400'}`}>
-                          {isPos ? '+' : ''}{pnlSol.toFixed(4)}◎
+                    <div className={`rounded-lg px-3 py-2 ${pnlSol !== null ? (isPos ? 'bg-green-900/20 border border-green-800/40' : 'bg-red-900/20 border border-red-800/40') : 'bg-surface-700 border border-surface-600'}`}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-xs text-gray-500">Valor atual</div>
+                          <div className="text-xl font-mono font-bold text-white">{currentValueSol.toFixed(4)}◎</div>
+                          {token.dev_buy_sol > 0 && (
+                            <div className="text-xs text-gray-500 mt-0.5">Entrada: {token.dev_buy_sol}◎</div>
+                          )}
                         </div>
-                      </div>
-                      <div className={`text-lg font-bold ${isPos ? 'text-green-300' : 'text-red-400'}`}>
-                        {isPos ? '+' : ''}{pnlPct.toFixed(1)}%
+                        {pnlPct !== null && (
+                          <div className="text-right">
+                            <div className={`text-2xl font-bold font-mono ${isPos ? 'text-green-400' : 'text-red-400'}`}>
+                              {isPos ? '+' : ''}{pnlPct.toFixed(1)}%
+                            </div>
+                            <div className={`text-sm font-mono ${isPos ? 'text-green-500' : 'text-red-500'}`}>
+                              {isPos ? '+' : ''}{pnlSol!.toFixed(4)}◎
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )
-                })()}
-                {token.dev_buy_sol > 0 && (
-                  <div className="text-xs text-gray-600">Entrada: {token.dev_buy_sol}◎</div>
+                })() : (
+                  <div className="bg-surface-700 rounded px-3 py-2 flex items-center justify-between">
+                    <span className="text-sm text-gray-500">Carregando preco...</span>
+                    {token.dev_buy_sol > 0 && <span className="text-xs text-gray-600">Entrada: {token.dev_buy_sol}◎</span>}
+                  </div>
                 )}
+
+                {/* Detalhes */}
+                <div className="flex items-center gap-3 text-xs">
+                  <div>
+                    <span className="text-gray-500">Saldo: </span>
+                    <span className="text-gray-300 font-mono">{info ? Number(info.balance).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Preco: </span>
+                    <span className="text-gray-300 font-mono">{info ? `${info.price.toFixed(9)}◎` : '—'}</span>
+                  </div>
+                  <div className="ml-auto">
+                    {mint ? (
+                      <a href={`https://pump.fun/${mint}`} target="_blank" rel="noreferrer"
+                        className="font-mono text-brand hover:underline">
+                        {mint.slice(0, 6)}...{mint.slice(-4)}
+                      </a>
+                    ) : (
+                      <span className="text-red-400 font-mono">nao salvo</span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* TX */}
@@ -1268,7 +1303,7 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs text-gray-400">Vender</span>
-                    <span className="text-xs font-mono text-white">{pct}%</span>
+                    <span className="text-xs font-mono text-white font-semibold">{pct}%</span>
                   </div>
                   <input
                     type="range"
@@ -1290,11 +1325,35 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
                   </div>
                 </div>
 
+                {/* Estimativa de recebimento */}
+                {estimatedSol !== null && (
+                  <div className="flex items-center justify-between bg-surface-700 rounded px-2.5 py-1.5">
+                    <span className="text-xs text-gray-400">Voce recebera ~</span>
+                    <span className="text-sm font-mono font-bold text-white">{estimatedSol.toFixed(4)}◎</span>
+                  </div>
+                )}
+
+                {/* Slippage */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500 flex-shrink-0">Slippage</span>
+                  <div className="flex gap-1 flex-1">
+                    {SLIPPAGE_OPTIONS.map(opt => (
+                      <button
+                        key={opt.value}
+                        onClick={() => setSlippage(prev => ({ ...prev, [mint]: opt.value }))}
+                        className={`flex-1 text-xs py-0.5 rounded border transition-colors ${slip === opt.value ? 'border-brand/60 text-brand bg-brand/10' : 'border-surface-600 text-gray-500 hover:text-white'}`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="flex gap-2">
                   <button
-                    onClick={() => onSellAll(mint, pct)}
+                    onClick={() => onSellAll(mint, pct, slip)}
                     disabled={!hasSession || action?.loading}
-                    className="flex-1 btn-primary text-xs py-2"
+                    className="flex-1 btn-primary text-xs py-2 font-semibold"
                   >
                     {action?.loading ? 'aguarde...' : `Sell ${pct}%`}
                   </button>
