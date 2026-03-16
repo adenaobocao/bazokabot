@@ -3,11 +3,12 @@ import { Connection, Keypair, PublicKey, sendAndConfirmTransaction } from '@sola
 import { NATIVE_MINT } from '@solana/spl-token'
 import BN from 'bn.js'
 
+// Values in basis points (bps): 0.25% = 25 bps
 export const METEORA_FEE_TIERS: Record<string, number> = {
-  '0.10%':  100,
-  '0.25%':  250,
-  '0.30%':  300,
-  '1%':    1000,
+  '0.10%':  10,
+  '0.25%':  25,
+  '0.30%':  30,
+  '1%':    100,
 }
 
 export interface CreateDammPoolParams {
@@ -32,7 +33,7 @@ export async function createDammPool(params: CreateDammPoolParams): Promise<Damm
 
   const { connection, payer, tokenMint, tokenAmount, solLamports, feeTierLabel } = params
 
-  const feeNumerator = METEORA_FEE_TIERS[feeTierLabel] ?? METEORA_FEE_TIERS['0.25%']
+  const feeBps = METEORA_FEE_TIERS[feeTierLabel] ?? METEORA_FEE_TIERS['0.25%']
 
   const tokenAMint = tokenMint
   const tokenBMint = NATIVE_MINT
@@ -49,12 +50,7 @@ export async function createDammPool(params: CreateDammPoolParams): Promise<Damm
     tokenAAmount,
     tokenBAmount,
     false,  // isStable = false → constant product (DAMM)
-    {
-      tradeFeeNumerator: new BN(feeNumerator),
-      tradeFeeDenominator: new BN(10000),
-      ownerTradeFeeNumerator: new BN(0),
-      ownerTradeFeeDenominator: new BN(10000),
-    },
+    { tradeFeeBps: new BN(feeBps) },
   )
 
   let lastTxId = ''
