@@ -11,6 +11,8 @@ import { monitorRouter } from './routes/monitor'
 import { standardRouter } from './routes/standard'
 import { sessionMiddleware } from './middleware/session'
 import { authRouter, authMiddleware } from './routes/auth'
+import { liveDeploysRouter } from './routes/live-deploys'
+import { startIngestionWorker, setBroadcastFn } from './workers/ingestion'
 
 dotenv.config()
 
@@ -36,7 +38,7 @@ app.use('/api/auth', authRouter)
 
 // Todas as outras rotas exigem auth primeiro, depois wallet session para operacoes
 const AUTH_PUBLIC = ['/auth/login', '/auth/logout']
-const WALLET_SESSION_PUBLIC = ['/wallet/session', '/wallet/generate', '/standard/upload-metadata']
+const WALLET_SESSION_PUBLIC = ['/wallet/session', '/wallet/generate', '/standard/upload-metadata', '/live-deploys']
 
 app.use('/api', (req, res, next) => {
   const sub = req.path
@@ -51,6 +53,7 @@ app.use('/api/wallet', walletRouter)
 app.use('/api/token', tokenRouter)
 app.use('/api/monitor', monitorRouter)
 app.use('/api/standard', standardRouter)
+app.use('/api/live-deploys', liveDeploysRouter)
 
 // WebSocket: associa conexao ao session token
 wss.on('connection', (ws, req) => {
@@ -68,6 +71,15 @@ wss.on('connection', (ws, req) => {
 
   ws.send(JSON.stringify({ type: 'connected', message: 'WebSocket conectado' }))
 })
+
+// Injeta broadcast no worker de ingestao e inicia polling
+setBroadcastFn((data) => {
+  const msg = JSON.stringify(data)
+  for (const ws of wsClients.values()) {
+    if ((ws as any).readyState === 1) (ws as any).send(msg)
+  }
+})
+startIngestionWorker()
 
 // Em producao: serve o frontend buildado (pasta public/ dentro do backend)
 if (isProd) {

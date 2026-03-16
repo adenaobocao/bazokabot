@@ -86,6 +86,7 @@ export default function Layout({ auth, session, onLogout, onSessionChange, child
             <NavLink to="/standard" className={navClass}>Standard Deploy</NavLink>
             <NavLink to="/monitor" className={navClass}>Monitor</NavLink>
             <NavLink to="/wallets" className={navClass}>Wallets</NavLink>
+            <NavLink to="/live" className={navClass}>Live Deploys</NavLink>
           </nav>
         </div>
 

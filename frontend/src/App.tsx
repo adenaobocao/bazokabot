@@ -11,6 +11,7 @@ import DeployPage from './pages/DeployPage'
 import WalletsPage from './pages/WalletsPage'
 import MonitorPage from './pages/MonitorPage'
 import StandardDeployPage from './pages/StandardDeployPage'
+import LiveDeploysPage from './pages/LiveDeploysPage'
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
@@ -87,6 +88,7 @@ export default function App() {
           <Route path="/standard" element={<StandardDeployPage />} />
           <Route path="/wallets" element={<WalletsPage />} />
           <Route path="/monitor" element={<MonitorPage />} />
+          <Route path="/live" element={<LiveDeploysPage />} />
         </Routes>
       </Layout>
     </SessionContext.Provider>
