@@ -277,6 +277,40 @@ async function pollAllSources(): Promise<void> {
 // Start / Stop
 // -------------------------------------------------------
 
+let isPolling = false
+let lastPollAt: Date | null = null
+let lastPollError: string | null = null
+
+async function pollAllSourcesTracked(): Promise<void> {
+  if (isPolling) return
+  isPolling = true
+  lastPollError = null
+  try {
+    await pollAllSources()
+    lastPollAt = new Date()
+  } catch (err) {
+    lastPollError = err instanceof Error ? err.message : String(err)
+  } finally {
+    isPolling = false
+  }
+}
+
+export function getWorkerStatus() {
+  return {
+    running: pollingTimer !== null,
+    isPolling,
+    lastPollAt: lastPollAt?.toISOString() ?? null,
+    lastPollError,
+    intervalMs: POLL_INTERVAL_MS,
+    xConfigured: !!process.env.X_BEARER_TOKEN,
+    supabaseConfigured: !!supabase,
+  }
+}
+
+export async function triggerPollNow(): Promise<void> {
+  await pollAllSourcesTracked()
+}
+
 export function startIngestionWorker(): void {
   if (!process.env.X_BEARER_TOKEN) {
     console.log('[Ingestion] X_BEARER_TOKEN nao configurado — worker desabilitado')
@@ -288,8 +322,8 @@ export function startIngestionWorker(): void {
   }
 
   console.log('[Ingestion] Worker iniciado — poll a cada 5 minutos')
-  pollAllSources()
-  pollingTimer = setInterval(pollAllSources, POLL_INTERVAL_MS)
+  pollAllSourcesTracked()
+  pollingTimer = setInterval(pollAllSourcesTracked, POLL_INTERVAL_MS)
 }
 
 export function stopIngestionWorker(): void {

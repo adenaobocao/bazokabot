@@ -10,10 +10,10 @@ import { loadAuth } from '../lib/session'
 interface TrackedSource {
   id: string
   source_value: string
-  source_type: string
   is_active: boolean
   priority: number
   last_polled_at: string | null
+  x_user_id: string | null
 }
 
 interface SignalAnalysis {
@@ -32,7 +32,6 @@ interface PostAsset {
   id: string
   asset_type: string
   public_url: string
-  storage_path: string
 }
 
 interface LaunchDraft {
@@ -47,7 +46,6 @@ interface LaunchDraft {
 
 interface Signal {
   id: string
-  external_post_id: string
   author_handle: string
   author_name: string
   author_avatar_url: string
@@ -60,6 +58,21 @@ interface Signal {
   signal_analysis: SignalAnalysis[] | SignalAnalysis | null
   post_assets: PostAsset[] | null
   launch_drafts?: LaunchDraft[] | null
+}
+
+interface WorkerStatus {
+  running: boolean
+  isPolling: boolean
+  lastPollAt: string | null
+  lastPollError: string | null
+  xConfigured: boolean
+  supabaseConfigured: boolean
+}
+
+interface Stats {
+  signals: { total: number; new: number; ready: number; deployed: number; ignored: number }
+  drafts: { pending: number; deployed: number }
+  deploys: { total: number; success: number }
 }
 
 interface DeployForm {
@@ -77,24 +90,23 @@ interface DeployForm {
 // Helpers
 // -------------------------------------------------------
 
-function getAnalysis(signal: Signal): SignalAnalysis | null {
-  if (!signal.signal_analysis) return null
-  return Array.isArray(signal.signal_analysis) ? signal.signal_analysis[0] ?? null : signal.signal_analysis
+function getAnalysis(s: Signal): SignalAnalysis | null {
+  if (!s.signal_analysis) return null
+  return Array.isArray(s.signal_analysis) ? s.signal_analysis[0] ?? null : s.signal_analysis
 }
 
-function getPrimaryAsset(signal: Signal): PostAsset | null {
-  if (!signal.post_assets?.length) return null
-  return signal.post_assets.find(a => a.asset_type === 'original_media') ?? signal.post_assets[0]
+function getPrimaryAsset(s: Signal): PostAsset | null {
+  if (!s.post_assets?.length) return null
+  return s.post_assets.find(a => a.asset_type === 'original_media') ?? s.post_assets[0]
 }
 
-function getDraft(signal: Signal): LaunchDraft | null {
-  if (!signal.launch_drafts?.length) return null
-  return signal.launch_drafts[0]
+function getDraft(s: Signal): LaunchDraft | null {
+  if (!s.launch_drafts?.length) return null
+  return s.launch_drafts[0]
 }
 
 function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60_000)
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000)
   if (m < 1) return 'agora'
   if (m < 60) return `${m}m`
   const h = Math.floor(m / 60)
@@ -102,11 +114,11 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d`
 }
 
-function scoreBadge(label: 'low' | 'medium' | 'high', score: number) {
+function ScorePill({ label, score }: { label: 'low' | 'medium' | 'high'; score: number }) {
   const cls = label === 'high'
     ? 'bg-green-900/60 text-green-300 border-green-700'
     : label === 'medium'
-      ? 'bg-yellow-900/60 text-yellow-300 border-yellow-700'
+      ? 'bg-yellow-900/50 text-yellow-300 border-yellow-700'
       : 'bg-gray-800 text-gray-400 border-gray-700'
   return (
     <span className={`text-xs px-1.5 py-0.5 rounded border font-mono ${cls}`}>
@@ -115,7 +127,7 @@ function scoreBadge(label: 'low' | 'medium' | 'high', score: number) {
   )
 }
 
-function statusDot(status: string) {
+function StatusDot({ status }: { status: string }) {
   const colors: Record<string, string> = {
     new: 'bg-blue-400',
     processing: 'bg-yellow-400 animate-pulse',
@@ -125,7 +137,7 @@ function statusDot(status: string) {
     failed: 'bg-red-500',
     ignored: 'bg-gray-600',
   }
-  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${colors[status] ?? 'bg-gray-500'}`} />
+  return <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${colors[status] ?? 'bg-gray-500'}`} />
 }
 
 async function urlToBase64(url: string): Promise<{ base64: string; mimeType: string }> {
@@ -136,8 +148,7 @@ async function urlToBase64(url: string): Promise<{ base64: string; mimeType: str
     reader.onloadend = () => {
       const result = reader.result as string
       const [header, base64] = result.split(',')
-      const mimeType = header.match(/:(.*?);/)?.[1] ?? 'image/jpeg'
-      resolve({ base64, mimeType })
+      resolve({ base64, mimeType: header.match(/:(.*?);/)?.[1] ?? 'image/jpeg' })
     }
     reader.onerror = reject
     reader.readAsDataURL(blob)
@@ -153,18 +164,20 @@ export default function LiveDeploysPage() {
 
   const [signals, setSignals] = useState<Signal[]>([])
   const [sources, setSources] = useState<TrackedSource[]>([])
+  const [stats, setStats] = useState<Stats | null>(null)
+  const [workerStatus, setWorkerStatus] = useState<WorkerStatus | null>(null)
   const [selected, setSelected] = useState<Signal | null>(null)
   const [loading, setLoading] = useState(true)
+  const [polling, setPolling] = useState(false)
+  const [seeding, setSeeding] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [creatingDraft, setCreatingDraft] = useState(false)
-  const [showWatchlist, setShowWatchlist] = useState(false)
+  const [tab, setTab] = useState<'feed' | 'watchlist'>('feed')
   const [newHandle, setNewHandle] = useState('')
   const [addingSource, setAddingSource] = useState(false)
   const [filterStatus, setFilterStatus] = useState('')
   const [filterScore, setFilterScore] = useState('')
   const [filterMedia, setFilterMedia] = useState(false)
-
-  // Deploy state
   const [deployForm, setDeployForm] = useState<DeployForm | null>(null)
   const [deploying, setDeploying] = useState(false)
   const [deployResult, setDeployResult] = useState<{ ok: boolean; msg: string } | null>(null)
@@ -173,65 +186,55 @@ export default function LiveDeploysPage() {
   const wsRef = useRef<WebSocket | null>(null)
 
   // -------------------------------------------------------
-  // Load data
+  // Load
   // -------------------------------------------------------
 
-  const loadSignals = useCallback(async () => {
+  const loadAll = useCallback(async () => {
     try {
       const params = new URLSearchParams()
       if (filterStatus) params.set('status', filterStatus)
       if (filterScore) params.set('score_label', filterScore)
       if (filterMedia) params.set('has_media', 'true')
-      params.set('limit', '60')
-      const data = await api.get<Signal[]>(`/live-deploys/signals?${params}`)
-      setSignals(data)
-      // Atualiza o sinal selecionado se ele mudou
+      params.set('limit', '80')
+
+      const [sigs, srcs, st, ws] = await Promise.all([
+        api.get<Signal[]>(`/live-deploys/signals?${params}`),
+        api.get<TrackedSource[]>('/live-deploys/sources'),
+        api.get<Stats>('/live-deploys/stats'),
+        api.get<WorkerStatus>('/live-deploys/worker-status'),
+      ])
+      setSignals(sigs)
+      setSources(srcs)
+      setStats(st)
+      setWorkerStatus(ws)
       if (selected) {
-        const updated = data.find(s => s.id === selected.id)
+        const updated = sigs.find(s => s.id === selected.id)
         if (updated) setSelected(updated)
       }
     } catch (err) {
-      console.error('Erro ao carregar sinais:', err)
+      console.error('Erro ao carregar:', err)
     } finally {
       setLoading(false)
     }
   }, [filterStatus, filterScore, filterMedia, selected?.id])
 
-  const loadSources = useCallback(async () => {
-    try {
-      const data = await api.get<TrackedSource[]>('/live-deploys/sources')
-      setSources(data)
-    } catch (err) {
-      console.error('Erro ao carregar fontes:', err)
-    }
-  }, [])
-
+  useEffect(() => { loadAll() }, [filterStatus, filterScore, filterMedia])
   useEffect(() => {
-    loadSignals()
-    loadSources()
-  }, [filterStatus, filterScore, filterMedia])
-
-  // Poll a cada 30s como fallback
-  useEffect(() => {
-    const t = setInterval(loadSignals, 30_000)
+    const t = setInterval(loadAll, 20_000)
     return () => clearInterval(t)
-  }, [loadSignals])
+  }, [loadAll])
 
-  // WebSocket para updates em tempo real
+  // WebSocket
   useEffect(() => {
     const auth = loadAuth()
     if (!auth) return
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    const ws = new WebSocket(`${proto}//${host}/ws?token=${auth.token}`)
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${auth.token}`)
     wsRef.current = ws
-
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data)
-        if (msg.type === 'signal_new' || msg.type === 'signal_ready') {
-          loadSignals()
-        }
+        if (msg.type === 'signal_new' || msg.type === 'signal_ready') loadAll()
       } catch { /* ignora */ }
     }
     return () => ws.close()
@@ -241,11 +244,62 @@ export default function LiveDeploysPage() {
   // Acoes
   // -------------------------------------------------------
 
+  async function handlePollNow() {
+    setPolling(true)
+    try {
+      await api.post('/live-deploys/poll-now')
+      // Aguarda um pouco para o worker processar
+      setTimeout(loadAll, 3000)
+      setTimeout(loadAll, 8000)
+    } catch (err: any) {
+      alert('Erro: ' + err.message)
+    } finally {
+      setTimeout(() => setPolling(false), 3000)
+    }
+  }
+
+  async function handleSeedWatchlist() {
+    setSeeding(true)
+    try {
+      const res = await api.post<{ added: number }>('/live-deploys/seed-watchlist')
+      await loadAll()
+      setTab('watchlist')
+      alert(`${(res as any).added} contas adicionadas a watchlist!`)
+    } catch (err: any) {
+      alert('Erro: ' + err.message)
+    } finally {
+      setSeeding(false)
+    }
+  }
+
+  async function handleAddSource() {
+    if (!newHandle.trim()) return
+    setAddingSource(true)
+    try {
+      await api.post('/live-deploys/sources', { source_value: newHandle.trim() })
+      setNewHandle('')
+      await loadAll()
+    } catch (err: any) {
+      alert('Erro: ' + err.message)
+    } finally {
+      setAddingSource(false)
+    }
+  }
+
+  async function handleRemoveSource(id: string) {
+    try {
+      await (api as any).delete(`/live-deploys/sources/${id}`)
+      await loadAll()
+    } catch (err: any) {
+      alert('Erro: ' + err.message)
+    }
+  }
+
   async function handleAnalyze(signal: Signal) {
     setAnalyzing(true)
     try {
       await api.post(`/live-deploys/signals/${signal.id}/analyze`)
-      await loadSignals()
+      await loadAll()
     } catch (err: any) {
       alert('Erro na analise: ' + err.message)
     } finally {
@@ -257,7 +311,7 @@ export default function LiveDeploysPage() {
     try {
       await api.post(`/live-deploys/signals/${signal.id}/ignore`)
       setSelected(null)
-      await loadSignals()
+      await loadAll()
     } catch (err: any) {
       alert('Erro: ' + err.message)
     }
@@ -275,8 +329,7 @@ export default function LiveDeploysPage() {
         twitter_url: signal.post_url,
         image_url: asset?.public_url ?? '',
       })
-      await loadSignals()
-      // Abre deploy form com o draft criado
+      await loadAll()
       openDeployForm(draft)
     } catch (err: any) {
       alert('Erro ao criar draft: ' + err.message)
@@ -301,17 +354,10 @@ export default function LiveDeploysPage() {
   }
 
   async function handleDeploy() {
-    if (!deployForm || !draftForDeploy) return
-    if (!session) {
-      alert('Ative uma wallet antes de fazer deploy.')
-      return
-    }
-
+    if (!deployForm || !draftForDeploy || !session) return
     setDeploying(true)
     setDeployResult(null)
-
     try {
-      // 1. Converter imagem para base64
       let imageBase64 = ''
       let mimeType = 'image/jpeg'
       if (deployForm.imageUrl) {
@@ -319,23 +365,18 @@ export default function LiveDeploysPage() {
         imageBase64 = b64.base64
         mimeType = b64.mimeType
       }
-
       if (!imageBase64) throw new Error('Imagem necessaria para o deploy')
 
-      // 2. Upload metadata para pump.fun IPFS
       const { metadataUri } = await api.post<{ metadataUri: string }>('/token/upload-image', {
-        imageBase64,
-        mimeType,
+        imageBase64, mimeType,
         name: deployForm.name,
         symbol: deployForm.ticker,
         description: deployForm.description,
         twitter: deployForm.twitterUrl,
       })
 
-      // 3. Deploy on-chain
-      const result = await api.post<{ signature?: string; mint?: string; txHash?: string; error?: string }>(
-        '/token/deploy',
-        {
+      const result = await api.post<{ signature?: string; mint?: string; txHash?: string }>(
+        '/token/deploy', {
           metadataUri,
           name: deployForm.name,
           symbol: deployForm.ticker,
@@ -346,25 +387,19 @@ export default function LiveDeploysPage() {
         }
       )
 
-      const txHash = result.signature ?? result.txHash
-      const mintAddress = result.mint
-
-      // 4. Registrar deploy
       await api.post(`/live-deploys/drafts/${draftForDeploy.id}/deployed`, {
-        tx_hash: txHash,
-        mint_address: mintAddress,
+        tx_hash: result.signature ?? result.txHash,
+        mint_address: result.mint,
         deploy_status: 'success',
       })
 
-      setDeployResult({ ok: true, msg: `Deploy ok! TX: ${txHash?.slice(0, 16)}...` })
-      await loadSignals()
+      setDeployResult({ ok: true, msg: `Deploy ok! TX: ${(result.signature ?? result.txHash ?? '').slice(0, 20)}...` })
+      await loadAll()
     } catch (err: any) {
       setDeployResult({ ok: false, msg: err.message })
-      // Registrar falha
       try {
         await api.post(`/live-deploys/drafts/${draftForDeploy.id}/deployed`, {
-          deploy_status: 'failed',
-          error_message: err.message,
+          deploy_status: 'failed', error_message: err.message,
         })
       } catch { /* ignora */ }
     } finally {
@@ -372,530 +407,585 @@ export default function LiveDeploysPage() {
     }
   }
 
-  async function handleAddSource() {
-    if (!newHandle.trim()) return
-    setAddingSource(true)
-    try {
-      await api.post('/live-deploys/sources', { source_value: newHandle.trim() })
-      setNewHandle('')
-      await loadSources()
-    } catch (err: any) {
-      alert('Erro: ' + err.message)
-    } finally {
-      setAddingSource(false)
-    }
-  }
-
-  async function handleRemoveSource(id: string) {
-    try {
-      await (api as any).delete(`/live-deploys/sources/${id}`)
-      await loadSources()
-    } catch (err: any) {
-      alert('Erro: ' + err.message)
-    }
-  }
-
   // -------------------------------------------------------
-  // Render helpers
+  // Derived
   // -------------------------------------------------------
 
   const analysis = selected ? getAnalysis(selected) : null
   const asset = selected ? getPrimaryAsset(selected) : null
   const existingDraft = selected ? getDraft(selected) : null
 
+  const workerOk = workerStatus?.running && workerStatus.xConfigured && workerStatus.supabaseConfigured
+
   // -------------------------------------------------------
-  // Layout 3 colunas
+  // Render
   // -------------------------------------------------------
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-120px)] -mx-2">
+    <div className="flex flex-col gap-4 h-[calc(100vh-100px)] -mx-2">
 
-      {/* ---- Coluna esquerda: feed ---- */}
-      <div className="w-72 flex flex-col gap-3 flex-shrink-0">
+      {/* ---- Top bar ---- */}
+      <div className="flex items-center gap-3 flex-wrap">
 
-        {/* Header + watchlist toggle */}
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-            Live Feed
+        {/* Stats */}
+        {stats && (
+          <div className="flex gap-2 flex-wrap">
+            <StatChip label="sinais" value={stats.signals.total} />
+            <StatChip label="prontos" value={stats.signals.ready} color="green" />
+            <StatChip label="drafts" value={stats.drafts.pending} color="purple" />
+            <StatChip label="deployados" value={stats.signals.deployed} color="brand" />
+          </div>
+        )}
+
+        <div className="flex-1" />
+
+        {/* Worker status */}
+        <div className="flex items-center gap-2 text-xs">
+          <span className={`w-2 h-2 rounded-full ${workerOk ? 'bg-green-400' : 'bg-red-500'}`} />
+          <span className="text-gray-400">
+            {workerStatus?.isPolling
+              ? 'buscando...'
+              : workerStatus?.lastPollAt
+                ? `ultimo poll ${timeAgo(workerStatus.lastPollAt)}`
+                : 'aguardando poll'}
           </span>
-          <button
-            onClick={() => setShowWatchlist(v => !v)}
-            className="text-xs text-brand hover:underline"
-          >
-            {showWatchlist ? 'ver sinais' : `watchlist (${sources.length})`}
-          </button>
+          {workerStatus?.lastPollError && (
+            <span className="text-red-400 text-xs truncate max-w-48" title={workerStatus.lastPollError}>
+              erro: {workerStatus.lastPollError.slice(0, 40)}
+            </span>
+          )}
         </div>
 
-        {showWatchlist ? (
-          /* ---- Watchlist panel ---- */
-          <div className="flex-1 overflow-y-auto space-y-2">
-            <div className="flex gap-2">
-              <input
-                className="input flex-1 text-xs py-1.5"
-                placeholder="@handle"
-                value={newHandle}
-                onChange={e => setNewHandle(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAddSource()}
-              />
-              <button
-                onClick={handleAddSource}
-                disabled={addingSource}
-                className="btn-primary text-xs px-3 py-1.5"
-              >
-                +
-              </button>
-            </div>
-            {sources.length === 0 && (
-              <p className="text-xs text-gray-500 text-center py-4">
-                Nenhuma conta monitorada.
-              </p>
-            )}
-            {sources.map(s => (
-              <div key={s.id} className="flex items-center justify-between bg-surface-800 rounded px-3 py-2">
-                <div>
-                  <span className="text-xs font-medium text-white">@{s.source_value}</span>
-                  {s.last_polled_at && (
-                    <span className="text-xs text-gray-500 ml-2">
-                      {timeAgo(s.last_polled_at)}
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={() => handleRemoveSource(s.id)}
-                  className="text-xs text-gray-500 hover:text-danger"
-                >
-                  x
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          /* ---- Signal feed ---- */
-          <>
-            {/* Filtros */}
-            <div className="flex flex-wrap gap-1.5">
-              <select
-                className="input text-xs py-1 flex-1 min-w-0"
-                value={filterStatus}
-                onChange={e => setFilterStatus(e.target.value)}
-              >
-                <option value="">todos status</option>
-                <option value="new">novo</option>
-                <option value="processing">processando</option>
-                <option value="ready">pronto</option>
-                <option value="reviewed">revisado</option>
-                <option value="deployed">deployado</option>
-                <option value="ignored">ignorado</option>
-              </select>
-              <select
-                className="input text-xs py-1 flex-1 min-w-0"
-                value={filterScore}
-                onChange={e => setFilterScore(e.target.value)}
-              >
-                <option value="">score</option>
-                <option value="high">high</option>
-                <option value="medium">medium</option>
-                <option value="low">low</option>
-              </select>
-              <button
-                onClick={() => setFilterMedia(v => !v)}
-                className={`text-xs px-2 py-1 rounded border transition-colors ${
-                  filterMedia
-                    ? 'border-brand/60 text-brand bg-brand/10'
-                    : 'border-surface-500 text-gray-400'
-                }`}
-              >
-                img
-              </button>
-            </div>
+        {/* Botoes de acao global */}
+        <button
+          onClick={handlePollNow}
+          disabled={polling || workerStatus?.isPolling}
+          className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
+        >
+          {polling || workerStatus?.isPolling ? (
+            <>
+              <span className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" />
+              buscando...
+            </>
+          ) : 'Poll Agora'}
+        </button>
 
-            <div className="flex-1 overflow-y-auto space-y-1.5">
-              {loading && (
-                <p className="text-xs text-gray-500 text-center py-6">carregando...</p>
-              )}
-              {!loading && signals.length === 0 && (
-                <p className="text-xs text-gray-500 text-center py-6">
-                  Nenhum sinal ainda.{' '}
-                  <button onClick={() => setShowWatchlist(true)} className="text-brand hover:underline">
-                    Adicione contas na watchlist.
-                  </button>
-                </p>
-              )}
-              {signals.map(sig => {
-                const a = getAnalysis(sig)
-                const img = getPrimaryAsset(sig)
-                const isSelected = selected?.id === sig.id
-                return (
-                  <button
-                    key={sig.id}
-                    onClick={() => setSelected(sig)}
-                    className={`w-full text-left rounded-lg px-3 py-2.5 transition-colors border ${
-                      isSelected
-                        ? 'bg-brand/10 border-brand/40'
-                        : 'bg-surface-800 border-surface-700 hover:border-surface-500'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      {img && (
-                        <img
-                          src={img.public_url}
-                          alt=""
-                          className="w-8 h-8 rounded object-cover flex-shrink-0"
-                        />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          {statusDot(sig.ingestion_status)}
-                          <span className="text-xs font-medium text-white truncate">
-                            @{sig.author_handle}
-                          </span>
-                          <span className="text-xs text-gray-500 ml-auto flex-shrink-0">
-                            {timeAgo(sig.posted_at)}
-                          </span>
-                        </div>
-                        <p className="text-xs text-gray-400 truncate mt-0.5">
-                          {sig.text_raw}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 mt-1">
-                      {a && scoreBadge(a.score_label, a.score)}
-                      {sig.has_media && (
-                        <span className="text-xs text-gray-500 border border-surface-600 px-1 rounded">
-                          img
-                        </span>
-                      )}
-                      {a?.extracted_ticker_primary && (
-                        <span className="text-xs text-brand font-mono">
-                          ${a.extracted_ticker_primary}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          </>
+        {sources.length === 0 && (
+          <button
+            onClick={handleSeedWatchlist}
+            disabled={seeding}
+            className="text-xs py-1.5 px-3 rounded border border-brand/50 text-brand hover:bg-brand/10 transition-colors"
+          >
+            {seeding ? 'adicionando...' : '+ Seed Celebridades'}
+          </button>
         )}
       </div>
 
-      {/* ---- Coluna central: detalhe ---- */}
-      <div className="flex-1 min-w-0 flex flex-col gap-3 overflow-y-auto">
-        {!selected ? (
-          <div className="flex-1 flex items-center justify-center">
-            <p className="text-gray-500 text-sm">Selecione um sinal para ver o detalhe</p>
+      {/* Config alert se nao configurado */}
+      {workerStatus && (!workerStatus.xConfigured || !workerStatus.supabaseConfigured) && (
+        <div className="bg-yellow-900/30 border border-yellow-700/50 rounded-lg px-4 py-2 text-xs text-yellow-300">
+          {!workerStatus.xConfigured && <span>X_BEARER_TOKEN nao configurado. </span>}
+          {!workerStatus.supabaseConfigured && <span>Supabase nao configurado. </span>}
+          <span>Adicione as env vars no Railway e faca redeploy.</span>
+        </div>
+      )}
+
+      {/* ---- Layout 3 colunas ---- */}
+      <div className="flex gap-4 flex-1 min-h-0">
+
+        {/* ---- Coluna esquerda ---- */}
+        <div className="w-72 flex flex-col gap-3 flex-shrink-0">
+
+          {/* Tabs */}
+          <div className="flex gap-1">
+            <TabBtn active={tab === 'feed'} onClick={() => setTab('feed')}>
+              Feed {signals.length > 0 && <span className="ml-1 text-gray-500">({signals.length})</span>}
+            </TabBtn>
+            <TabBtn active={tab === 'watchlist'} onClick={() => setTab('watchlist')}>
+              Watchlist {sources.length > 0 && <span className="ml-1 text-gray-500">({sources.length})</span>}
+            </TabBtn>
           </div>
-        ) : (
-          <>
-            {/* Post preview */}
-            <div className="bg-surface-800 rounded-lg p-4 border border-surface-700">
-              <div className="flex items-center gap-3 mb-3">
-                {selected.author_avatar_url && (
-                  <img
-                    src={selected.author_avatar_url}
-                    alt=""
-                    className="w-9 h-9 rounded-full"
-                  />
-                )}
-                <div>
-                  <div className="text-sm font-medium text-white">{selected.author_name}</div>
-                  <div className="text-xs text-gray-400">@{selected.author_handle}</div>
-                </div>
-                <div className="ml-auto flex items-center gap-2">
-                  {statusDot(selected.ingestion_status)}
-                  <span className="text-xs text-gray-400 capitalize">{selected.ingestion_status}</span>
-                  <a
-                    href={selected.post_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs text-brand hover:underline"
-                  >
-                    ver post
-                  </a>
-                </div>
-              </div>
 
-              <p className="text-sm text-gray-200 leading-relaxed mb-3">{selected.text_raw}</p>
+          {tab === 'watchlist' ? (
+            <WatchlistPanel
+              sources={sources}
+              newHandle={newHandle}
+              setNewHandle={setNewHandle}
+              onAdd={handleAddSource}
+              onRemove={handleRemoveSource}
+              adding={addingSource}
+              onSeed={handleSeedWatchlist}
+              seeding={seeding}
+            />
+          ) : (
+            <FeedPanel
+              signals={signals}
+              loading={loading}
+              selected={selected}
+              onSelect={setSelected}
+              filterStatus={filterStatus}
+              setFilterStatus={setFilterStatus}
+              filterScore={filterScore}
+              setFilterScore={setFilterScore}
+              filterMedia={filterMedia}
+              setFilterMedia={setFilterMedia}
+              onSeed={handleSeedWatchlist}
+              seeding={seeding}
+            />
+          )}
+        </div>
 
-              {selected.metrics_json && (
-                <div className="flex gap-4 text-xs text-gray-500">
-                  <span>{selected.metrics_json.like_count} likes</span>
-                  <span>{selected.metrics_json.retweet_count} RTs</span>
-                  <span>{selected.metrics_json.reply_count} respostas</span>
-                </div>
-              )}
-            </div>
+        {/* ---- Coluna central ---- */}
+        <div className="flex-1 min-w-0 overflow-y-auto flex flex-col gap-3">
+          {!selected ? (
+            <EmptyDetail />
+          ) : (
+            <SignalDetail
+              signal={selected}
+              analysis={analysis}
+              asset={asset}
+              existingDraft={existingDraft}
+              analyzing={analyzing}
+              onAnalyze={() => handleAnalyze(selected)}
+              onOpenDeploy={openDeployForm}
+            />
+          )}
+        </div>
 
-            {/* Imagem */}
-            {asset && (
-              <div className="bg-surface-800 rounded-lg p-3 border border-surface-700">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gray-400">Asset</span>
-                  <span className="text-xs text-gray-600 font-mono">{asset.asset_type}</span>
-                </div>
-                <img
-                  src={asset.public_url}
-                  alt="Post media"
-                  className="max-h-48 rounded object-contain w-full"
+        {/* ---- Coluna direita: acoes ---- */}
+        <div className="w-52 flex-shrink-0 flex flex-col gap-3">
+          {selected && (
+            <>
+              <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Acoes</span>
+
+              {deployForm && draftForDeploy ? (
+                <DeployPanel
+                  form={deployForm}
+                  setForm={setDeployForm}
+                  onDeploy={handleDeploy}
+                  onClose={() => { setDeployForm(null); setDraftForDeploy(null); setDeployResult(null) }}
+                  deploying={deploying}
+                  result={deployResult}
+                  hasSession={!!session}
                 />
-              </div>
-            )}
+              ) : (
+                <ActionPanel
+                  signal={selected}
+                  analysis={analysis}
+                  existingDraft={existingDraft}
+                  creatingDraft={creatingDraft}
+                  analyzing={analyzing}
+                  onCreateDraft={() => handleCreateDraft(selected)}
+                  onOpenDeploy={openDeployForm}
+                  onAnalyze={() => handleAnalyze(selected)}
+                  onIgnore={() => handleIgnore(selected)}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
-            {/* Analise */}
-            {analysis ? (
-              <div className="bg-surface-800 rounded-lg p-4 border border-surface-700 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-                    Analise
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {scoreBadge(analysis.score_label, analysis.score)}
-                    <span className="text-xs text-gray-500">
-                      conf. {Math.round(analysis.confidence * 100)}%
-                    </span>
-                    <button
-                      onClick={() => handleAnalyze(selected)}
-                      disabled={analyzing}
-                      className="text-xs text-gray-500 hover:text-white transition-colors"
-                    >
-                      {analyzing ? 'analisando...' : 're-analisar'}
-                    </button>
+// -------------------------------------------------------
+// Sub-componentes
+// -------------------------------------------------------
+
+function StatChip({ label, value, color }: { label: string; value: number; color?: string }) {
+  const cls = color === 'green' ? 'text-green-400'
+    : color === 'purple' ? 'text-purple-400'
+      : color === 'brand' ? 'text-brand'
+        : 'text-white'
+  return (
+    <div className="bg-surface-800 rounded px-2.5 py-1 border border-surface-700 text-xs flex items-center gap-1.5">
+      <span className={`font-mono font-bold ${cls}`}>{value}</span>
+      <span className="text-gray-500">{label}</span>
+    </div>
+  )
+}
+
+function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 text-xs py-1.5 rounded border transition-colors ${
+        active
+          ? 'border-brand/50 bg-brand/10 text-brand'
+          : 'border-surface-600 text-gray-400 hover:text-white'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+function WatchlistPanel({
+  sources, newHandle, setNewHandle, onAdd, onRemove, adding, onSeed, seeding
+}: {
+  sources: TrackedSource[]
+  newHandle: string
+  setNewHandle: (v: string) => void
+  onAdd: () => void
+  onRemove: (id: string) => void
+  adding: boolean
+  onSeed: () => void
+  seeding: boolean
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      <div className="flex gap-2">
+        <input
+          className="input flex-1 text-xs py-1.5"
+          placeholder="@handle"
+          value={newHandle}
+          onChange={e => setNewHandle(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && onAdd()}
+        />
+        <button onClick={onAdd} disabled={adding} className="btn-primary text-xs px-3 py-1.5">+</button>
+      </div>
+      {sources.length === 0 ? (
+        <div className="flex-1 flex flex-col items-center justify-center gap-3 text-center">
+          <p className="text-xs text-gray-500">Nenhuma conta monitorada.</p>
+          <button onClick={onSeed} disabled={seeding} className="btn-primary text-xs py-1.5 px-4">
+            {seeding ? 'adicionando...' : 'Seed Celebridades'}
+          </button>
+          <p className="text-xs text-gray-600">Adiciona Trump, Elon, CZ e +20 contas</p>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto space-y-1">
+          {sources.map(s => (
+            <div key={s.id} className="flex items-center justify-between bg-surface-800 rounded px-3 py-2 border border-surface-700">
+              <div>
+                <span className="text-xs font-medium text-white">@{s.source_value}</span>
+                {s.last_polled_at
+                  ? <span className="text-xs text-gray-500 ml-2">{timeAgo(s.last_polled_at)}</span>
+                  : <span className="text-xs text-gray-600 ml-2">aguardando poll</span>
+                }
+              </div>
+              <button onClick={() => onRemove(s.id)} className="text-xs text-gray-600 hover:text-danger ml-2">x</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FeedPanel({
+  signals, loading, selected, onSelect,
+  filterStatus, setFilterStatus, filterScore, setFilterScore, filterMedia, setFilterMedia,
+  onSeed, seeding,
+}: {
+  signals: Signal[]
+  loading: boolean
+  selected: Signal | null
+  onSelect: (s: Signal) => void
+  filterStatus: string
+  setFilterStatus: (v: string) => void
+  filterScore: string
+  setFilterScore: (v: string) => void
+  filterMedia: boolean
+  setFilterMedia: (v: boolean) => void
+  onSeed: () => void
+  seeding: boolean
+}) {
+  return (
+    <div className="flex-1 min-h-0 flex flex-col gap-2">
+      <div className="flex gap-1.5">
+        <select className="input text-xs py-1 flex-1" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+          <option value="">status</option>
+          <option value="new">novo</option>
+          <option value="ready">pronto</option>
+          <option value="reviewed">revisado</option>
+          <option value="deployed">deployado</option>
+          <option value="ignored">ignorado</option>
+        </select>
+        <select className="input text-xs py-1 flex-1" value={filterScore} onChange={e => setFilterScore(e.target.value)}>
+          <option value="">score</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <button
+          onClick={() => setFilterMedia(!filterMedia)}
+          className={`text-xs px-2 py-1 rounded border transition-colors ${filterMedia ? 'border-brand/60 text-brand' : 'border-surface-600 text-gray-500'}`}
+        >
+          img
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto space-y-1.5">
+        {loading && <p className="text-xs text-gray-500 text-center py-8">carregando...</p>}
+        {!loading && signals.length === 0 && (
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <p className="text-xs text-gray-500">Nenhum sinal ainda.</p>
+            <button onClick={onSeed} disabled={seeding} className="btn-primary text-xs py-1.5 px-4">
+              {seeding ? 'adicionando...' : '+ Seed Celebridades'}
+            </button>
+            <p className="text-xs text-gray-600">Depois clique em "Poll Agora"</p>
+          </div>
+        )}
+        {signals.map(sig => {
+          const a = getAnalysis(sig)
+          const img = getPrimaryAsset(sig)
+          const isSelected = selected?.id === sig.id
+          return (
+            <button
+              key={sig.id}
+              onClick={() => onSelect(sig)}
+              className={`w-full text-left rounded-lg px-3 py-2.5 transition-colors border ${
+                isSelected ? 'bg-brand/10 border-brand/40' : 'bg-surface-800 border-surface-700 hover:border-surface-500'
+              }`}
+            >
+              <div className="flex gap-2">
+                {img ? (
+                  <img src={img.public_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-10 h-10 rounded bg-surface-700 flex-shrink-0 flex items-center justify-center text-gray-600 text-xs">
+                    {sig.author_handle[0]?.toUpperCase()}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <StatusDot status={sig.ingestion_status} />
+                    <span className="text-xs font-medium text-white truncate">@{sig.author_handle}</span>
+                    <span className="text-xs text-gray-500 ml-auto flex-shrink-0">{timeAgo(sig.posted_at)}</span>
+                  </div>
+                  <p className="text-xs text-gray-400 leading-relaxed line-clamp-2">{sig.text_raw}</p>
+                  <div className="flex items-center gap-1.5 mt-1">
+                    {a && <ScorePill label={a.score_label} score={a.score} />}
+                    {a?.extracted_ticker_primary && (
+                      <span className="text-xs text-brand font-mono">${a.extracted_ticker_primary}</span>
+                    )}
+                    {sig.has_media && <span className="text-xs text-gray-600 border border-surface-600 px-1 rounded">img</span>}
                   </div>
                 </div>
-
-                <div>
-                  <div className="text-xs text-gray-500 mb-1">Nome sugerido</div>
-                  <div className="text-sm font-medium text-white">{analysis.extracted_name}</div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-gray-500 mb-1">Tickers sugeridos</div>
-                  <div className="flex gap-2">
-                    <span className="px-2 py-1 rounded bg-green-900/40 text-green-300 text-xs font-mono border border-green-800">
-                      ${analysis.extracted_ticker_primary}
-                    </span>
-                    <span className="px-2 py-1 rounded bg-surface-700 text-gray-300 text-xs font-mono border border-surface-600">
-                      ${analysis.extracted_ticker_alt_1}
-                    </span>
-                    <span className="px-2 py-1 rounded bg-surface-700 text-gray-300 text-xs font-mono border border-surface-600">
-                      ${analysis.extracted_ticker_alt_2}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs text-gray-500 mb-1">Descricao</div>
-                  <div className="text-sm text-gray-300">{analysis.short_description}</div>
-                </div>
               </div>
-            ) : (
-              <div className="bg-surface-800 rounded-lg p-4 border border-surface-700 flex items-center justify-between">
-                <span className="text-sm text-gray-500">Sem analise</span>
-                <button
-                  onClick={() => handleAnalyze(selected)}
-                  disabled={analyzing}
-                  className="btn-primary text-xs py-1.5 px-3"
-                >
-                  {analyzing ? 'analisando...' : 'analisar agora'}
-                </button>
-              </div>
-            )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
-            {/* Draft existente */}
-            {existingDraft && (
-              <div className="bg-surface-800 rounded-lg p-3 border border-purple-800/50">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-xs text-purple-400 font-medium">Draft criado</span>
-                    <span className="text-xs text-gray-400 ml-2 font-mono">{existingDraft.name} / ${existingDraft.ticker}</span>
-                  </div>
-                  {existingDraft.status === 'pending' && (
-                    <button
-                      onClick={() => openDeployForm(existingDraft)}
-                      className="btn-primary text-xs py-1 px-3"
-                    >
-                      Deploy
-                    </button>
-                  )}
-                  {existingDraft.status === 'deployed' && (
-                    <span className="text-xs text-brand">Deployado</span>
-                  )}
-                </div>
-              </div>
-            )}
-          </>
+function EmptyDetail() {
+  return (
+    <div className="flex-1 flex items-center justify-center">
+      <p className="text-gray-600 text-sm">Selecione um sinal no feed</p>
+    </div>
+  )
+}
+
+function SignalDetail({ signal, analysis, asset, existingDraft, analyzing, onAnalyze, onOpenDeploy }: {
+  signal: Signal
+  analysis: SignalAnalysis | null
+  asset: PostAsset | null
+  existingDraft: LaunchDraft | null
+  analyzing: boolean
+  onAnalyze: () => void
+  onOpenDeploy: (d: LaunchDraft) => void
+}) {
+  return (
+    <>
+      {/* Post */}
+      <div className="bg-surface-800 rounded-lg p-4 border border-surface-700">
+        <div className="flex items-start gap-3 mb-3">
+          {signal.author_avatar_url
+            ? <img src={signal.author_avatar_url} alt="" className="w-9 h-9 rounded-full flex-shrink-0" />
+            : <div className="w-9 h-9 rounded-full bg-surface-600 flex-shrink-0 flex items-center justify-center text-sm font-bold text-gray-400">{signal.author_handle[0]?.toUpperCase()}</div>
+          }
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium text-white">{signal.author_name}</span>
+              <span className="text-xs text-gray-500">@{signal.author_handle}</span>
+              <span className="text-xs text-gray-600">{timeAgo(signal.posted_at)}</span>
+              <StatusDot status={signal.ingestion_status} />
+              <span className="text-xs text-gray-600 capitalize">{signal.ingestion_status}</span>
+            </div>
+          </div>
+          <a href={signal.post_url} target="_blank" rel="noreferrer" className="text-xs text-brand hover:underline flex-shrink-0">
+            ver no X
+          </a>
+        </div>
+        <p className="text-sm text-gray-200 leading-relaxed">{signal.text_raw}</p>
+        {signal.metrics_json && (
+          <div className="flex gap-4 text-xs text-gray-600 mt-3 pt-3 border-t border-surface-700">
+            <span>{signal.metrics_json.like_count} likes</span>
+            <span>{signal.metrics_json.retweet_count} RTs</span>
+            <span>{signal.metrics_json.reply_count} replies</span>
+          </div>
         )}
       </div>
 
-      {/* ---- Coluna direita: acoes ---- */}
-      <div className="w-52 flex-shrink-0 flex flex-col gap-3">
+      {/* Asset */}
+      {asset && (
+        <div className="bg-surface-800 rounded-lg overflow-hidden border border-surface-700">
+          <img src={asset.public_url} alt="Media" className="w-full max-h-52 object-contain bg-black" />
+        </div>
+      )}
 
-        {selected && (
-          <>
-            <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">
-              Acoes
-            </span>
+      {/* Analise */}
+      {analysis ? (
+        <div className="bg-surface-800 rounded-lg p-4 border border-surface-700 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Analise IA</span>
+            <div className="flex items-center gap-2">
+              <ScorePill label={analysis.score_label} score={analysis.score} />
+              <span className="text-xs text-gray-600">{Math.round(analysis.confidence * 100)}% conf.</span>
+              <button onClick={onAnalyze} disabled={analyzing} className="text-xs text-gray-500 hover:text-white">
+                {analyzing ? 'analisando...' : 're-analisar'}
+              </button>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Nome sugerido</p>
+            <p className="text-sm font-semibold text-white">{analysis.extracted_name}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-2">Tickers sugeridos</p>
+            <div className="flex gap-2">
+              <span className="px-2.5 py-1 rounded bg-green-900/40 text-green-300 text-sm font-mono font-bold border border-green-800">${analysis.extracted_ticker_primary}</span>
+              <span className="px-2.5 py-1 rounded bg-surface-700 text-gray-300 text-sm font-mono border border-surface-600">${analysis.extracted_ticker_alt_1}</span>
+              <span className="px-2.5 py-1 rounded bg-surface-700 text-gray-300 text-sm font-mono border border-surface-600">${analysis.extracted_ticker_alt_2}</span>
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Descricao</p>
+            <p className="text-sm text-gray-300">{analysis.short_description}</p>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-surface-800 rounded-lg p-4 border border-surface-700 flex items-center justify-between">
+          <span className="text-sm text-gray-500">Sem analise ainda</span>
+          <button onClick={onAnalyze} disabled={analyzing} className="btn-primary text-xs py-1.5 px-3">
+            {analyzing ? 'analisando...' : 'Analisar'}
+          </button>
+        </div>
+      )}
 
-            {/* Deploy form */}
-            {deployForm && draftForDeploy ? (
-              <div className="bg-surface-800 rounded-lg p-3 border border-surface-700 space-y-2.5">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-medium text-white">Confirmar Deploy</span>
-                  <button
-                    onClick={() => { setDeployForm(null); setDraftForDeploy(null); setDeployResult(null) }}
-                    className="text-xs text-gray-500 hover:text-white"
-                  >
-                    x
-                  </button>
-                </div>
+      {/* Draft existente */}
+      {existingDraft && (
+        <div className="bg-surface-800 rounded-lg p-3 border border-purple-800/60 flex items-center justify-between">
+          <div>
+            <span className="text-xs text-purple-400 font-medium">Draft criado</span>
+            <span className="text-xs text-gray-400 ml-2 font-mono">{existingDraft.name} / ${existingDraft.ticker}</span>
+          </div>
+          {existingDraft.status === 'pending' && (
+            <button onClick={() => onOpenDeploy(existingDraft)} className="btn-primary text-xs py-1 px-3">Deploy</button>
+          )}
+          {existingDraft.status === 'deployed' && <span className="text-xs text-brand">Deployado</span>}
+        </div>
+      )}
+    </>
+  )
+}
 
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Nome</label>
-                  <input
-                    className="input w-full text-xs py-1.5"
-                    value={deployForm.name}
-                    onChange={e => setDeployForm(f => f && ({ ...f, name: e.target.value }))}
-                  />
-                </div>
+function ActionPanel({ signal, analysis, existingDraft, creatingDraft, analyzing, onCreateDraft, onOpenDeploy, onAnalyze, onIgnore }: {
+  signal: Signal
+  analysis: SignalAnalysis | null
+  existingDraft: LaunchDraft | null
+  creatingDraft: boolean
+  analyzing: boolean
+  onCreateDraft: () => void
+  onOpenDeploy: (d: LaunchDraft) => void
+  onAnalyze: () => void
+  onIgnore: () => void
+}) {
+  return (
+    <div className="space-y-2">
+      {!analysis && (
+        <button onClick={onAnalyze} disabled={analyzing} className="btn-primary w-full text-xs py-2">
+          {analyzing ? 'analisando...' : 'Analisar Signal'}
+        </button>
+      )}
+      {analysis && !existingDraft && signal.ingestion_status !== 'ignored' && (
+        <button onClick={onCreateDraft} disabled={creatingDraft} className="btn-primary w-full text-xs py-2">
+          {creatingDraft ? 'criando draft...' : 'Criar Draft + Deploy'}
+        </button>
+      )}
+      {existingDraft?.status === 'pending' && (
+        <button onClick={() => onOpenDeploy(existingDraft)} className="btn-primary w-full text-xs py-2">
+          Abrir Deploy
+        </button>
+      )}
+      {existingDraft?.status === 'deployed' && (
+        <div className="text-center text-xs text-brand py-2 border border-brand/30 rounded">Ja deployado</div>
+      )}
+      {signal.ingestion_status !== 'ignored' && signal.ingestion_status !== 'deployed' && (
+        <button onClick={onIgnore} className="w-full text-xs py-2 rounded border border-surface-600 text-gray-500 hover:text-danger hover:border-danger/40 transition-colors">
+          Ignorar
+        </button>
+      )}
+      <a href={signal.post_url} target="_blank" rel="noreferrer"
+        className="block w-full text-center text-xs py-2 rounded border border-surface-600 text-gray-400 hover:text-white hover:border-surface-400 transition-colors">
+        Abrir no X
+      </a>
+    </div>
+  )
+}
 
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Ticker</label>
-                  <input
-                    className="input w-full text-xs py-1.5 uppercase"
-                    value={deployForm.ticker}
-                    onChange={e => setDeployForm(f => f && ({ ...f, ticker: e.target.value.toUpperCase() }))}
-                    maxLength={6}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Descricao</label>
-                  <textarea
-                    className="input w-full text-xs py-1.5 resize-none"
-                    rows={2}
-                    value={deployForm.description}
-                    onChange={e => setDeployForm(f => f && ({ ...f, description: e.target.value }))}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Dev Buy (SOL)</label>
-                  <input
-                    className="input w-full text-xs py-1.5"
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={deployForm.devBuySol}
-                    onChange={e => setDeployForm(f => f && ({ ...f, devBuySol: e.target.value }))}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs text-gray-400 block mb-1">Fee</label>
-                  <select
-                    className="input w-full text-xs py-1.5"
-                    value={deployForm.feeLevel}
-                    onChange={e => setDeployForm(f => f && ({ ...f, feeLevel: e.target.value as any }))}
-                  >
-                    <option value="fast">fast</option>
-                    <option value="turbo">turbo</option>
-                    <option value="ultra">ultra</option>
-                  </select>
-                </div>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={deployForm.useJito}
-                    onChange={e => setDeployForm(f => f && ({ ...f, useJito: e.target.checked }))}
-                    className="rounded"
-                  />
-                  <span className="text-xs text-gray-400">Usar Jito</span>
-                </label>
-
-                {!session && (
-                  <p className="text-xs text-yellow-400">Ative uma wallet para fazer deploy.</p>
-                )}
-
-                {deployResult && (
-                  <p className={`text-xs ${deployResult.ok ? 'text-green-400' : 'text-danger'}`}>
-                    {deployResult.msg}
-                  </p>
-                )}
-
-                <button
-                  onClick={handleDeploy}
-                  disabled={deploying || !session || deployResult?.ok}
-                  className="btn-primary w-full text-xs py-2"
-                >
-                  {deploying ? 'deployando...' : deployResult?.ok ? 'feito!' : 'Confirmar Deploy'}
-                </button>
-              </div>
-            ) : (
-              /* Botoes de acao padrão */
-              <div className="space-y-2">
-                {/* Criar draft + abrir deploy */}
-                {!existingDraft && analysis && (
-                  <button
-                    onClick={() => handleCreateDraft(selected)}
-                    disabled={creatingDraft}
-                    className="btn-primary w-full text-xs py-2"
-                  >
-                    {creatingDraft ? 'criando...' : 'Criar Draft + Deploy'}
-                  </button>
-                )}
-
-                {/* Se ja tem draft */}
-                {existingDraft?.status === 'pending' && (
-                  <button
-                    onClick={() => openDeployForm(existingDraft)}
-                    className="btn-primary w-full text-xs py-2"
-                  >
-                    Abrir Deploy
-                  </button>
-                )}
-
-                {/* Se nao tem analise ainda */}
-                {!analysis && (
-                  <button
-                    onClick={() => handleAnalyze(selected)}
-                    disabled={analyzing}
-                    className="w-full btn-ghost text-xs py-2 border border-surface-600"
-                  >
-                    {analyzing ? 'analisando...' : 'Analisar Signal'}
-                  </button>
-                )}
-
-                <button
-                  onClick={() => handleIgnore(selected)}
-                  className="w-full btn-ghost text-xs py-2 border border-surface-600 text-gray-500 hover:text-danger hover:border-danger/50"
-                >
-                  Ignorar
-                </button>
-
-                <a
-                  href={selected.post_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="block w-full text-center btn-ghost text-xs py-2 border border-surface-600"
-                >
-                  Ver no X
-                </a>
-
-                {selected.ingestion_status === 'deployed' && (
-                  <div className="text-center text-xs text-brand py-1">Ja deployado</div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-
-        {!selected && (
-          <p className="text-xs text-gray-600 text-center mt-4">
-            Selecione um sinal para ver as acoes
-          </p>
-        )}
+function DeployPanel({ form, setForm, onDeploy, onClose, deploying, result, hasSession }: {
+  form: DeployForm
+  setForm: (f: DeployForm | null) => void
+  onDeploy: () => void
+  onClose: () => void
+  deploying: boolean
+  result: { ok: boolean; msg: string } | null
+  hasSession: boolean
+}) {
+  function update(patch: Partial<DeployForm>) {
+    setForm({ ...form, ...patch })
+  }
+  return (
+    <div className="bg-surface-800 rounded-lg p-3 border border-surface-600 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-white">Confirmar Deploy</span>
+        <button onClick={onClose} className="text-gray-500 hover:text-white text-xs">x</button>
       </div>
+      <Field label="Nome">
+        <input className="input w-full text-xs py-1.5" value={form.name} onChange={e => update({ name: e.target.value })} />
+      </Field>
+      <Field label="Ticker">
+        <input className="input w-full text-xs py-1.5 font-mono uppercase" value={form.ticker} maxLength={6}
+          onChange={e => update({ ticker: e.target.value.toUpperCase() })} />
+      </Field>
+      <Field label="Descricao">
+        <textarea className="input w-full text-xs py-1.5 resize-none" rows={2} value={form.description}
+          onChange={e => update({ description: e.target.value })} />
+      </Field>
+      <Field label="Dev Buy SOL">
+        <input className="input w-full text-xs py-1.5" type="number" min="0" step="0.1" value={form.devBuySol}
+          onChange={e => update({ devBuySol: e.target.value })} />
+      </Field>
+      <Field label="Fee">
+        <select className="input w-full text-xs py-1.5" value={form.feeLevel}
+          onChange={e => update({ feeLevel: e.target.value as any })}>
+          <option value="fast">fast</option>
+          <option value="turbo">turbo</option>
+          <option value="ultra">ultra</option>
+        </select>
+      </Field>
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input type="checkbox" checked={form.useJito} onChange={e => update({ useJito: e.target.checked })} className="rounded" />
+        <span className="text-xs text-gray-400">Usar Jito</span>
+      </label>
+      {!hasSession && <p className="text-xs text-yellow-400">Ative uma wallet para deployar.</p>}
+      {result && <p className={`text-xs ${result.ok ? 'text-green-400' : 'text-danger'}`}>{result.msg}</p>}
+      <button onClick={onDeploy} disabled={deploying || !hasSession || result?.ok === true} className="btn-primary w-full text-xs py-2">
+        {deploying ? 'deployando...' : result?.ok ? 'feito!' : 'Confirmar Deploy'}
+      </button>
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="text-xs text-gray-500 block mb-1">{label}</label>
+      {children}
     </div>
   )
 }

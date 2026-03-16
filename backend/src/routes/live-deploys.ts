@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { supabase } from '../db/supabase'
 import { extractSignalData } from '../services/extraction'
 import { scoreSignal } from '../services/scoring'
+import { triggerPollNow, getWorkerStatus } from '../workers/ingestion'
 
 export const liveDeploysRouter = Router()
 
@@ -268,6 +269,50 @@ liveDeploysRouter.post('/drafts/:id/deployed', async (req, res) => {
   }
 
   res.json(run)
+})
+
+// -------------------------------------------------------
+// Worker: status e poll manual
+// -------------------------------------------------------
+
+liveDeploysRouter.get('/worker-status', (_req, res) => {
+  res.json(getWorkerStatus())
+})
+
+liveDeploysRouter.post('/poll-now', async (_req, res) => {
+  const status = getWorkerStatus()
+  if (status.isPolling) return res.json({ ok: false, message: 'Poll ja em andamento' })
+  triggerPollNow().catch(() => {}) // roda em background
+  res.json({ ok: true, message: 'Poll iniciado' })
+})
+
+// Seed de contas populares para watchlist
+const SEED_HANDLES = [
+  // Cripto / traders
+  'elonmusk', 'realDonaldTrump', 'saylor', 'cz_binance', 'justinsuntron',
+  'brian_armstrong', 'VitalikButerin', 'balajis', 'RaoulGMI', 'chamath',
+  'DavidSacks', 'naval', 'gainzy222',
+  // Celebridades / meme culture
+  'SnoopDogg', 'ParisHilton', 'KimKardashian', 'garyvee', 'mcuban',
+  // Cripto native influencers
+  'blknoiz06', 'CryptoKaleo', 'AltcoinGordon',
+]
+
+liveDeploysRouter.post('/seed-watchlist', async (_req, res) => {
+  if (!supabase) return noDb(res)
+  const results: { handle: string; ok: boolean }[] = []
+  for (const handle of SEED_HANDLES) {
+    try {
+      await supabase.from('tracked_sources').upsert(
+        { source_type: 'account', source_value: handle, is_active: true, priority: 5 },
+        { onConflict: 'source_value' }
+      )
+      results.push({ handle, ok: true })
+    } catch {
+      results.push({ handle, ok: false })
+    }
+  }
+  res.json({ added: results.filter(r => r.ok).length, results })
 })
 
 // -------------------------------------------------------
