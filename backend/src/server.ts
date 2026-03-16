@@ -36,7 +36,7 @@ app.use('/api/auth', authRouter)
 
 // Todas as outras rotas exigem auth primeiro, depois wallet session para operacoes
 const AUTH_PUBLIC = ['/auth/login', '/auth/logout']
-const WALLET_SESSION_PUBLIC = ['/wallet/session', '/wallet/generate']
+const WALLET_SESSION_PUBLIC = ['/wallet/session', '/wallet/generate', '/standard/upload-metadata']
 
 app.use('/api', (req, res, next) => {
   const sub = req.path
