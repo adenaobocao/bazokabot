@@ -11,7 +11,9 @@ export function setBroadcastFn(fn: BroadcastFn) {
   _broadcast = fn
 }
 
-const POLL_INTERVAL_MS = 2 * 60 * 1000 // 2 minutos
+const POLL_INTERVAL_MINUTES = parseInt(process.env.POLL_INTERVAL_MINUTES ?? '15', 10)
+const POLL_INTERVAL_MS = POLL_INTERVAL_MINUTES * 60 * 1000
+const POLL_STAGGER_MS = 2500 // 2.5s entre cada conta para nao rafalar a API
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
 // Cache em memoria para deduplicar na mesma sessao
@@ -270,6 +272,8 @@ async function pollAllSources(): Promise<void> {
     } catch (err) {
       console.error(`[Ingestion] Erro ao fazer poll de @${source.source_value}:`, err)
     }
+    // Stagger: espera entre cada conta para nao rafalar a API
+    await new Promise(r => setTimeout(r, POLL_STAGGER_MS))
   }
 }
 
@@ -302,6 +306,8 @@ export function getWorkerStatus() {
     lastPollAt: lastPollAt?.toISOString() ?? null,
     lastPollError,
     intervalMs: POLL_INTERVAL_MS,
+    intervalMinutes: POLL_INTERVAL_MINUTES,
+    staggerMs: POLL_STAGGER_MS,
     xConfigured: !!process.env.X_BEARER_TOKEN,
     supabaseConfigured: !!supabase,
   }
@@ -321,7 +327,7 @@ export function startIngestionWorker(): void {
     return
   }
 
-  console.log('[Ingestion] Worker iniciado — poll a cada 5 minutos')
+  console.log(`[Ingestion] Worker iniciado — poll a cada ${POLL_INTERVAL_MINUTES} minutos (stagger ${POLL_STAGGER_MS}ms entre contas)`)
   pollAllSourcesTracked()
   pollingTimer = setInterval(pollAllSourcesTracked, POLL_INTERVAL_MS)
 }

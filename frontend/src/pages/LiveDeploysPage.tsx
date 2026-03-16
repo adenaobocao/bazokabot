@@ -67,6 +67,8 @@ interface WorkerStatus {
   lastPollError: string | null
   xConfigured: boolean
   supabaseConfigured: boolean
+  intervalMinutes: number
+  staggerMs: number
 }
 
 interface Stats {
@@ -90,6 +92,7 @@ interface DeployedToken {
   id: string
   tx_hash: string
   mint_address: string
+  dev_buy_sol: number
   created_at: string
   launch_drafts: {
     id: string
@@ -482,6 +485,7 @@ export default function LiveDeploysPage() {
         tx_hash: result.signature ?? result.txHash,
         mint_address: result.mint,
         deploy_status: 'success',
+        dev_buy_sol: parseFloat(deployForm.devBuySol) || 0,
       })
 
       setDeployResult({ ok: true, msg: `Deploy ok! TX: ${(result.signature ?? result.txHash ?? '').slice(0, 20)}...` })
@@ -567,39 +571,33 @@ export default function LiveDeploysPage() {
             {workerStatus?.isPolling
               ? 'buscando...'
               : workerStatus?.lastPollAt
-                ? `ultimo poll ${timeAgo(workerStatus.lastPollAt)}`
-                : 'aguardando poll'}
+                ? `poll ${timeAgo(workerStatus.lastPollAt)}`
+                : 'aguardando'}
           </span>
+          {workerStatus?.intervalMinutes && (
+            <span className="text-gray-600">a cada {workerStatus.intervalMinutes}min</span>
+          )}
+          {sources.length > 0 && workerStatus?.intervalMinutes && (
+            <span className="text-gray-600">
+              (~{sources.length} req/{workerStatus.intervalMinutes}min)
+            </span>
+          )}
           {workerStatus?.lastPollError && (
-            <span className="text-red-400 text-xs truncate max-w-48" title={workerStatus.lastPollError}>
-              erro: {workerStatus.lastPollError.slice(0, 40)}
+            <span className="text-red-400 truncate max-w-40" title={workerStatus.lastPollError}>
+              erro
             </span>
           )}
         </div>
 
-        {/* Botoes de acao global */}
         <button
           onClick={handlePollNow}
           disabled={polling || workerStatus?.isPolling}
           className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5"
         >
           {polling || workerStatus?.isPolling ? (
-            <>
-              <span className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" />
-              buscando...
-            </>
+            <><span className="w-3 h-3 border border-white/40 border-t-white rounded-full animate-spin" />buscando...</>
           ) : 'Poll Agora'}
         </button>
-
-        {sources.length === 0 && (
-          <button
-            onClick={handleSeedWatchlist}
-            disabled={seeding}
-            className="text-xs py-1.5 px-3 rounded border border-brand/50 text-brand hover:bg-brand/10 transition-colors"
-          >
-            {seeding ? 'adicionando...' : '+ Seed Celebridades'}
-          </button>
-        )}
       </div>
 
       {/* Config alert se nao configurado */}
@@ -700,6 +698,7 @@ export default function LiveDeploysPage() {
                   onOpenDeploy={openDeployForm}
                   onAnalyze={() => handleAnalyze(selected)}
                   onIgnore={() => handleIgnore(selected)}
+                  onGoDeployed={() => setMainTab('deployed')}
                 />
               )}
             </>
@@ -858,33 +857,47 @@ function FeedPanel({
             <button
               key={sig.id}
               onClick={() => onSelect(sig)}
-              className={`w-full text-left rounded-lg px-3 py-2.5 transition-colors border ${
+              className={`w-full text-left rounded-lg px-3 py-3 transition-colors border ${
                 isSelected ? 'bg-brand/10 border-brand/40' : 'bg-surface-800 border-surface-700 hover:border-surface-500'
               }`}
             >
-              <div className="flex gap-2">
-                {img ? (
-                  <img src={img.public_url} alt="" className="w-10 h-10 rounded object-cover flex-shrink-0" />
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-2">
+                {sig.author_avatar_url ? (
+                  <img src={sig.author_avatar_url} alt="" className="w-7 h-7 rounded-full flex-shrink-0" />
                 ) : (
-                  <div className="w-10 h-10 rounded bg-surface-700 flex-shrink-0 flex items-center justify-center text-gray-600 text-xs">
+                  <div className="w-7 h-7 rounded-full bg-surface-700 flex-shrink-0 flex items-center justify-center text-gray-500 text-xs font-bold">
                     {sig.author_handle[0]?.toUpperCase()}
                   </div>
                 )}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <StatusDot status={sig.ingestion_status} />
-                    <span className="text-xs font-medium text-white truncate">@{sig.author_handle}</span>
-                    <span className="text-xs text-gray-500 ml-auto flex-shrink-0">{timeAgo(sig.posted_at)}</span>
-                  </div>
-                  <p className="text-xs text-gray-400 leading-relaxed line-clamp-2">{sig.text_raw}</p>
-                  <div className="flex items-center gap-1.5 mt-1">
-                    {a && <ScorePill label={a.score_label} score={a.score} />}
-                    {a?.extracted_ticker_primary && (
-                      <span className="text-xs text-brand font-mono">${a.extracted_ticker_primary}</span>
-                    )}
-                    {sig.has_media && <span className="text-xs text-gray-600 border border-surface-600 px-1 rounded">img</span>}
-                  </div>
-                </div>
+                <StatusDot status={sig.ingestion_status} />
+                <span className="text-xs font-semibold text-white truncate">@{sig.author_handle}</span>
+                <span className="text-xs text-gray-500 ml-auto flex-shrink-0">{timeAgo(sig.posted_at)}</span>
+              </div>
+
+              {/* Imagem se tiver */}
+              {img && (
+                <img src={img.public_url} alt="" className="w-full h-24 rounded object-cover mb-2" />
+              )}
+
+              {/* Texto */}
+              <p className="text-xs text-gray-300 leading-relaxed line-clamp-3 mb-2">{sig.text_raw}</p>
+
+              {/* Footer */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {a && <ScorePill label={a.score_label} score={a.score} />}
+                {a?.extracted_ticker_primary && (
+                  <span className="text-xs text-brand font-mono font-bold">${a.extracted_ticker_primary}</span>
+                )}
+                {sig.metrics_json && (sig.metrics_json.like_count > 0 || sig.metrics_json.retweet_count > 0) && (
+                  <span className="text-xs text-gray-600">
+                    {sig.metrics_json.like_count > 0 && `${sig.metrics_json.like_count} likes`}
+                    {sig.metrics_json.retweet_count > 0 && ` · ${sig.metrics_json.retweet_count} RTs`}
+                  </span>
+                )}
+                {sig.ingestion_status === 'deployed' && (
+                  <span className="ml-auto text-xs text-brand font-medium">deployado</span>
+                )}
               </div>
             </button>
           )
@@ -1006,7 +1019,7 @@ function SignalDetail({ signal, analysis, asset, existingDraft, analyzing, onAna
   )
 }
 
-function ActionPanel({ signal, analysis, existingDraft, creatingDraft, analyzing, onCreateDraft, onOpenDeploy, onAnalyze, onIgnore }: {
+function ActionPanel({ signal, analysis, existingDraft, creatingDraft, analyzing, onCreateDraft, onOpenDeploy, onAnalyze, onIgnore, onGoDeployed }: {
   signal: Signal
   analysis: SignalAnalysis | null
   existingDraft: LaunchDraft | null
@@ -1016,15 +1029,16 @@ function ActionPanel({ signal, analysis, existingDraft, creatingDraft, analyzing
   onOpenDeploy: (d: LaunchDraft) => void
   onAnalyze: () => void
   onIgnore: () => void
+  onGoDeployed: () => void
 }) {
   return (
     <div className="space-y-2">
-      {!analysis && (
+      {!analysis && signal.ingestion_status !== 'deployed' && (
         <button onClick={onAnalyze} disabled={analyzing} className="btn-primary w-full text-xs py-2">
           {analyzing ? 'analisando...' : 'Analisar Signal'}
         </button>
       )}
-      {analysis && !existingDraft && signal.ingestion_status !== 'ignored' && (
+      {analysis && !existingDraft && signal.ingestion_status !== 'ignored' && signal.ingestion_status !== 'deployed' && (
         <button onClick={onCreateDraft} disabled={creatingDraft} className="btn-primary w-full text-xs py-2">
           {creatingDraft ? 'criando draft...' : 'Criar Draft + Deploy'}
         </button>
@@ -1034,8 +1048,10 @@ function ActionPanel({ signal, analysis, existingDraft, creatingDraft, analyzing
           Abrir Deploy
         </button>
       )}
-      {existingDraft?.status === 'deployed' && (
-        <div className="text-center text-xs text-brand py-2 border border-brand/30 rounded">Ja deployado</div>
+      {(existingDraft?.status === 'deployed' || signal.ingestion_status === 'deployed') && (
+        <button onClick={onGoDeployed} className="btn-primary w-full text-xs py-2">
+          Ver no Deployed
+        </button>
       )}
       {signal.ingestion_status !== 'ignored' && signal.ingestion_status !== 'deployed' && (
         <button onClick={onIgnore} className="w-full text-xs py-2 rounded border border-surface-600 text-gray-500 hover:text-danger hover:border-danger/40 transition-colors">
@@ -1177,31 +1193,53 @@ function DeployedPanel({ tokens, tokenInfos, tokenActions, onSellAll, onClaimFee
                 </button>
               </div>
 
-              {/* Info do token */}
-              <div className="px-3 py-2 flex items-center gap-4 border-b border-surface-700">
-                <div>
-                  <div className="text-xs text-gray-500">Saldo</div>
-                  <div className="text-sm font-mono text-white">
-                    {info ? Number(info.balance).toLocaleString() : '—'}
+              {/* Info + PnL */}
+              <div className="px-3 py-2 border-b border-surface-700 space-y-2">
+                <div className="flex items-center gap-4">
+                  <div>
+                    <div className="text-xs text-gray-500">Saldo</div>
+                    <div className="text-sm font-mono text-white">
+                      {info ? Number(info.balance).toLocaleString() : '—'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-gray-500">Preco</div>
+                    <div className="text-sm font-mono text-white">
+                      {info ? `${info.price.toFixed(8)}◎` : '—'}
+                    </div>
+                  </div>
+                  <div className="ml-auto text-right">
+                    <div className="text-xs text-gray-500">Mint</div>
+                    <a href={`https://pump.fun/${mint}`} target="_blank" rel="noreferrer"
+                      className="text-xs font-mono text-brand hover:underline">
+                      {mint.slice(0, 6)}...{mint.slice(-4)}
+                    </a>
                   </div>
                 </div>
-                <div>
-                  <div className="text-xs text-gray-500">Preco</div>
-                  <div className="text-sm font-mono text-white">
-                    {info ? `${info.price.toFixed(8)} SOL` : '—'}
-                  </div>
-                </div>
-                <div className="ml-auto text-right">
-                  <div className="text-xs text-gray-500">Mint</div>
-                  <a
-                    href={`https://pump.fun/${mint}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-mono text-brand hover:underline"
-                  >
-                    {mint.slice(0, 6)}...{mint.slice(-4)}
-                  </a>
-                </div>
+
+                {/* PnL */}
+                {info && token.dev_buy_sol > 0 && (() => {
+                  const currentValueSol = Number(info.balance) * info.price
+                  const pnlSol = currentValueSol - token.dev_buy_sol
+                  const pnlPct = (pnlSol / token.dev_buy_sol) * 100
+                  const isPos = pnlSol >= 0
+                  return (
+                    <div className={`rounded px-2 py-1.5 flex items-center justify-between ${isPos ? 'bg-green-900/30 border border-green-800/50' : 'bg-red-900/30 border border-red-800/50'}`}>
+                      <div>
+                        <div className="text-xs text-gray-400">PnL estimado</div>
+                        <div className={`text-sm font-mono font-bold ${isPos ? 'text-green-300' : 'text-red-400'}`}>
+                          {isPos ? '+' : ''}{pnlSol.toFixed(4)}◎
+                        </div>
+                      </div>
+                      <div className={`text-lg font-bold ${isPos ? 'text-green-300' : 'text-red-400'}`}>
+                        {isPos ? '+' : ''}{pnlPct.toFixed(1)}%
+                      </div>
+                    </div>
+                  )
+                })()}
+                {token.dev_buy_sol > 0 && (
+                  <div className="text-xs text-gray-600">Entrada: {token.dev_buy_sol}◎</div>
+                )}
               </div>
 
               {/* TX */}
