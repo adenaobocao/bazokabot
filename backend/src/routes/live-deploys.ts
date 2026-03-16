@@ -347,6 +347,19 @@ liveDeploysRouter.get('/worker-status', (_req, res) => {
   res.json(getWorkerStatus())
 })
 
+liveDeploysRouter.post('/seed-watchlist', async (req, res) => {
+  if (!supabase) return noDb(res)
+  const username = user(req)
+  await seedDefaultsForUser(username)
+  triggerPollNow().catch(() => {})
+  const { data } = await supabase
+    .from('tracked_sources')
+    .select('*')
+    .eq('username', username)
+    .eq('is_active', true)
+  res.json({ added: DEFAULT_HANDLES.length, sources: data ?? [] })
+})
+
 liveDeploysRouter.post('/poll-now', async (_req, res) => {
   const status = getWorkerStatus()
   if (status.isPolling) return res.json({ ok: false, message: 'Poll ja em andamento' })
